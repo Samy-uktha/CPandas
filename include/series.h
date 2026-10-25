@@ -22,7 +22,7 @@
 
 #include <stddef.h>
 #include <stdint.h>
-#include "error.h"
+#include "df_error.h"
 
 typedef enum {
     DTYPE_INT,    /* int64_t */

@@ -29,7 +29,7 @@
 #define DF_DATAFRAME_H
 
 #include <stddef.h>
-#include "error.h"
+#include "df_error.h"
 #include "series.h"
 
 typedef struct DataFrame DataFrame;
