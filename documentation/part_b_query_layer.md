@@ -1,12 +1,10 @@
 # CPandas – Part B: the query layer
 
-Author: Vedant Singh (Person B)
-
 This document covers everything you can do to a DataFrame once it exists:
 row selection, filtering, sorting, statistics, group-by, joins, the CLI demo
 and their tests. The data layer (Series, DataFrame container, CSV reader and
-writer, error codes) is Part A, by Samyuktha K, and is documented in its own
-headers (`series.h`, `dataframe.h`, `csv.h`, `df_error.h`).
+writer, error codes) is Part A, documented in
+[part_a_data_layer.md](part_a_data_layer.md).
 
 ---
 
@@ -458,14 +456,15 @@ Don't write it as `make test CFLAGS=...`. A value given on the make command
 line replaces the Makefile's own `CFLAGS += -Iinclude ...` line, so the
 headers are not found.
 
-**The CLI demo:**
+**The CLI demo** (`make` builds it too, together with the library and
+`build/basic`):
 
 ```bash
-gcc -std=c11 -Wall -Wextra -Iinclude examples/demo.c src/*.c -o demo
-./demo examples/data/employees.csv
+make demo
+./build/demo examples/data/employees.csv
 ```
 
-Running `./demo` with no file loads the built-in sample table
+Running `./build/demo` with no file loads the built-in sample table
 (`df_make_sample`).
 
 ### 7.1 Demo walkthrough
@@ -544,17 +543,8 @@ the leak.
 
 ## 10. Division of work
 
-| Person A – Samyuktha K (data layer) | Person B – Vedant Singh (query layer) |
-|---|---|
-| `series.h/.c`: storage, types, missing values, growth, `series_take` | `df_rows.h/.c`: head, tail, slice, take rows |
-| `dataframe.h/.c`: columns, add/remove/rename, column selection | `df_filter.h/.c`: comparison, missing and custom filters |
-| `csv.h/.c`: reader and writer | `df_sort.h/.c`: stable multi-column merge sort |
-| `df_error.h/.c`: status codes, `df_strerror` | `df_stats.h/.c`: count, sum, mean, median, min, max |
-| `Makefile` | `df_groupby.h/.c`: group-by and aggregation |
-| `tests/test_series.c` (and DataFrame/CSV tests) | `df_join.h/.c`: inner, left, right, outer join |
-| | `cpandas.h`, `examples/demo.c`, `examples/data/*.csv` |
-| | `tests/test_{rows,filter,sort,stats,groupby,join}.c`, `tests/test_helpers.h` |
-| | this document |
+> **TODO (to be decided by the team):** who did what. See the README's
+> "Division of work" section, which should be filled in at the same time.
 
 The interface between the two parts is the set of Part A headers. Part B
 uses only the public functions declared there.
