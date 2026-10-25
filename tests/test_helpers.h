@@ -1,7 +1,7 @@
 /*
- * test_helpers.h - small helpers shared by the Person B test files
- * (test_rows.c, test_filter.c, test_sort.c, test_stats.c, test_groupby.c,
- * test_join.c).
+ * test_helpers.h - small helpers shared by the test files
+ * (test_dataframe.c, test_csv.c, test_rows.c, test_filter.c, test_sort.c,
+ * test_stats.c, test_groupby.c, test_join.c).
  *
  * The helper functions are "static inline" so that a test file that does
  * not use one of them does not get an "unused function" warning.
