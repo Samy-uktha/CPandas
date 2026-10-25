@@ -1,0 +1,9 @@
+id,name,dept,age,salary,rating
+1,Asha,Sales,25,42000,4.2
+2,Ben,IT,32,58000,3.8
+3,Chen,Sales,,39000,4.5
+4,Dev,HR,41,51000,
+5,Esha,IT,29,,3.9
+6,Farid,Sales,35,45500,4.1
+7,Gita,IT,38,72000,4.8
+8,Hari,Ops,27,36000,3.5
