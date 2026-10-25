@@ -1,5 +1,5 @@
 /*
- * error.h - status codes shared by every module of the library.
+ * df_error.h - status codes shared by every module of the library.
  *
  * Convention: any function that can fail returns a df_status. Results are
  * handed back through out-parameters. On failure the out-parameter is set to
