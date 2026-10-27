@@ -503,13 +503,11 @@ df_status df_print(const DataFrame *df, void *stream, size_t max_rows)
         shown = max_rows;
     }
 
-    /* Width of each column = the longest text in it (name or cell). */
-    size_t *widths = NULL;
-    if (df->ncols > 0) {
-        widths = malloc(df->ncols * sizeof(size_t));
-        if (widths == NULL) {
-            return DF_ERR_NOMEM;
-        }
+    /* Width of each column = the longest text in it (name or cell).
+       The +1 keeps the size above 0 even for a frame with no columns. */
+    size_t *widths = malloc((df->ncols + 1) * sizeof(size_t));
+    if (widths == NULL) {
+        return DF_ERR_NOMEM;
     }
     char cell[PRINT_MAX_WIDTH + 40];
     for (size_t c = 0; c < df->ncols; c++) {

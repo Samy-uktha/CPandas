@@ -50,16 +50,11 @@ static int compare_doubles(double a, double b)
     return 0;
 }
 
-/* Allocates the array that will hold the matching row numbers. A frame
-   with 0 rows needs no array, so *rows stays NULL in that case. */
+/* Allocates the array that will hold the matching row numbers: room for
+   every row, plus one so the size is never 0 (malloc(0) may give NULL). */
 static df_status make_row_list(const DataFrame *df, size_t **rows)
 {
-    *rows = NULL;
-    size_t nrows = df_nrows(df);
-    if (nrows == 0) {
-        return DF_OK;
-    }
-    *rows = malloc(nrows * sizeof(size_t));
+    *rows = malloc((df_nrows(df) + 1) * sizeof(size_t));
     if (*rows == NULL) {
         return DF_ERR_NOMEM;
     }

@@ -101,8 +101,10 @@ static df_status find_pairs(const Series *left_key, const Series *right_key,
     /* INNER, LEFT and OUTER: go through the left rows. For OUTER we also
        remember which right rows got a partner (right_used[j] = 1). */
     unsigned char *right_used = NULL;
-    if (how == DF_JOIN_OUTER && nright > 0) {
-        right_used = calloc(nright, 1);     /* calloc sets everything to 0 */
+    if (how == DF_JOIN_OUTER) {
+        /* calloc sets everything to 0. The +1 keeps the size above 0, so
+           right_used is never NULL for an outer join. */
+        right_used = calloc(nright + 1, 1);
         if (right_used == NULL) {
             return DF_ERR_NOMEM;
         }
