@@ -295,6 +295,177 @@ static void test_large(void)
     df_free(right);
 }
 
+/* ---- several key columns, and a random cross-check ---------------------- */
+
+static void test_multi_key_join(void)
+{
+    /* left:  dept  year  name      right: dept  year  budget
+     *        IT    2023  A                IT    2024  5
+     *        IT    2024  B                IT    2023  7
+     *        HR    2024  C                HR    2023  9
+     *        IT    NA    D                IT    2024  6
+     */
+    const char *ld[] = {"IT", "IT", "HR", "IT"};
+    int64_t ly[] = {2023, 2024, 2024, MISSING_NUM};
+    const char *ln[] = {"A", "B", "C", "D"};
+    const char *rd[] = {"IT", "IT", "HR", "IT"};
+    int64_t ry[] = {2024, 2023, 2023, 2024};
+    int64_t rb[] = {5, 7, 9, 6};
+    DataFrame *left = new_frame();
+    add_column(left, make_string_column("dept", ld, 4));
+    add_column(left, make_int_column("year", ly, 4));
+    add_column(left, make_string_column("name", ln, 4));
+    DataFrame *right = new_frame();
+    add_column(right, make_string_column("dept", rd, 4));
+    add_column(right, make_int_column("year", ry, 4));
+    add_column(right, make_int_column("budget", rb, 4));
+
+    const char *on[] = {"dept", "year"};
+    DataFrame *out = NULL;
+    CHECK(df_merge_on(left, right, on, 2, DF_JOIN_INNER, &out) == DF_OK);
+    CHECK(df_nrows(out) == 3 && df_ncols(out) == 4);
+    CHECK(same_string(cell_string(out, "name", 0), "A"));
+    CHECK(cell_int(out, "budget", 0) == 7);
+    CHECK(same_string(cell_string(out, "name", 1), "B"));
+    CHECK(cell_int(out, "budget", 1) == 5);
+    CHECK(same_string(cell_string(out, "name", 2), "B"));
+    CHECK(cell_int(out, "budget", 2) == 6);
+    df_free(out);
+
+    /* outer: C and D have no partner, (HR, 2023) on the right neither */
+    CHECK(df_merge_on(left, right, on, 2, DF_JOIN_OUTER, &out) == DF_OK);
+    CHECK(df_nrows(out) == 6);
+    CHECK(same_string(cell_string(out, "name", 3), "C"));
+    CHECK(cell_missing(out, "budget", 3));
+    CHECK(same_string(cell_string(out, "name", 4), "D"));
+    CHECK(cell_missing(out, "name", 5));
+    CHECK(same_string(cell_string(out, "dept", 5), "HR"));   /* from right */
+    CHECK(cell_int(out, "year", 5) == 2023);
+    CHECK(cell_int(out, "budget", 5) == 9);
+    df_free(out);
+
+    /* errors */
+    const char *twice[] = {"dept", "dept"};
+    CHECK(df_merge_on(left, right, twice, 2, DF_JOIN_INNER, &out) ==
+          DF_ERR_DUPLICATE_NAME);
+    CHECK(df_merge_on(left, right, on, 0, DF_JOIN_INNER, &out) ==
+          DF_ERR_INVALID_ARG);
+    const char *bad[] = {"dept", "name"};   /* not in right */
+    CHECK(df_merge_on(left, right, bad, 2, DF_JOIN_INNER, &out) ==
+          DF_ERR_NOT_FOUND);
+    CHECK(out == NULL);
+    df_free(left);
+    df_free(right);
+}
+
+/* The pairs (left row, right row) the first version made with two nested
+   loops, written into lrow/rrow (-1 = no partner). Returns how many. */
+static size_t slow_pairs(const int64_t *lk, size_t nl, const int64_t *rk,
+                         size_t nr, df_join_type how, int64_t *lrow,
+                         int64_t *rrow)
+{
+    size_t n = 0;
+    if (how == DF_JOIN_RIGHT) {
+        for (size_t j = 0; j < nr; j++) {
+            int found = 0;
+            for (size_t i = 0; i < nl; i++) {
+                if (lk[i] != MISSING_NUM && lk[i] == rk[j]) {
+                    lrow[n] = (int64_t)i;
+                    rrow[n] = (int64_t)j;
+                    n++;
+                    found = 1;
+                }
+            }
+            if (!found) {
+                lrow[n] = -1;
+                rrow[n] = (int64_t)j;
+                n++;
+            }
+        }
+        return n;
+    }
+    int used[512] = {0};
+    for (size_t i = 0; i < nl; i++) {
+        int found = 0;
+        for (size_t j = 0; j < nr; j++) {
+            if (lk[i] != MISSING_NUM && lk[i] == rk[j]) {
+                lrow[n] = (int64_t)i;
+                rrow[n] = (int64_t)j;
+                n++;
+                found = 1;
+                used[j] = 1;
+            }
+        }
+        if (!found && how != DF_JOIN_INNER) {
+            lrow[n] = (int64_t)i;
+            rrow[n] = -1;
+            n++;
+        }
+    }
+    if (how == DF_JOIN_OUTER) {
+        for (size_t j = 0; j < nr; j++) {
+            if (!used[j]) {
+                lrow[n] = -1;
+                rrow[n] = (int64_t)j;
+                n++;
+            }
+        }
+    }
+    return n;
+}
+
+static void test_random_against_nested_loops(void)
+{
+    enum { NL = 300, NR = 200, MAXP = NL * NR + NL + NR };
+    int64_t lk[NL], lid[NL], rk[NR], rid[NR];
+    int64_t *lrow = malloc(MAXP * sizeof(int64_t));
+    int64_t *rrow = malloc(MAXP * sizeof(int64_t));
+    CHECK(lrow != NULL && rrow != NULL);
+    if (lrow == NULL || rrow == NULL) {
+        free(lrow);
+        free(rrow);
+        return;
+    }
+    df_join_type types[] = {DF_JOIN_INNER, DF_JOIN_LEFT, DF_JOIN_RIGHT,
+                            DF_JOIN_OUTER};
+    srand(99);
+    for (int round = 0; round < 3; round++) {
+        for (int i = 0; i < NL; i++) {
+            lk[i] = (rand() % 12 == 0) ? MISSING_NUM : rand() % 60;
+            lid[i] = i;
+        }
+        for (int j = 0; j < NR; j++) {
+            rk[j] = (rand() % 12 == 0) ? MISSING_NUM : rand() % 60;
+            rid[j] = j;
+        }
+        DataFrame *left = new_frame();
+        add_column(left, make_int_column("k", lk, NL));
+        add_column(left, make_int_column("lid", lid, NL));
+        DataFrame *right = new_frame();
+        add_column(right, make_int_column("k", rk, NR));
+        add_column(right, make_int_column("rid", rid, NR));
+
+        for (int t = 0; t < 4; t++) {
+            size_t n = slow_pairs(lk, NL, rk, NR, types[t], lrow, rrow);
+            DataFrame *out = NULL;
+            CHECK(df_merge(left, right, "k", types[t], &out) == DF_OK);
+            int ok = df_nrows(out) == n;
+            for (size_t r = 0; r < n && ok; r++) {
+                int64_t want_l = lrow[r] < 0 ? MISSING_NUM : lrow[r];
+                int64_t want_r = rrow[r] < 0 ? MISSING_NUM : rrow[r];
+                ok = cell_int(out, "lid", r) == want_l &&
+                     cell_int(out, "rid", r) == want_r;
+            }
+            CHECK(ok);
+            df_free(out);
+        }
+        df_free(left);
+        df_free(right);
+    }
+    free(lrow);
+    free(rrow);
+}
+
 int main(void)
 {
     test_inner();
@@ -306,5 +477,7 @@ int main(void)
     test_errors();
     test_empty_side();
     test_large();
+    test_multi_key_join();
+    test_random_against_nested_loops();
     return finish_tests();
 }

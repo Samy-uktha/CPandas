@@ -225,6 +225,126 @@ static void test_large(void)
     df_free(df);
 }
 
+/* ---- several key columns, new functions, and a random cross-check ------ */
+
+static void test_multi_key(void)
+{
+    /*  dept   city   salary
+     *  IT     Pune   10
+     *  IT     Delhi  20
+     *  Sales  Pune   30
+     *  IT     Pune   40
+     *  NA     Pune   50     <- missing key cell: left out
+     *  Sales  NA     60     <- left out too
+     *  Sales  Pune   NA
+     */
+    const char *depts[] = {"IT", "IT", "Sales", "IT", NULL, "Sales", "Sales"};
+    const char *cities[] = {"Pune", "Delhi", "Pune", "Pune", "Pune", NULL,
+                            "Pune"};
+    int64_t salaries[] = {10, 20, 30, 40, 50, 60, MISSING_NUM};
+    DataFrame *df = new_frame();
+    add_column(df, make_string_column("dept", depts, 7));
+    add_column(df, make_string_column("city", cities, 7));
+    add_column(df, make_int_column("salary", salaries, 7));
+
+    const char *keys[] = {"dept", "city"};
+    df_aggregation aggs[] = {
+        {"salary", DF_AGG_SUM},
+        {"salary", DF_AGG_COUNT},
+        {"city", DF_AGG_NUNIQUE},
+        {"salary", DF_AGG_STD}
+    };
+    DataFrame *out = NULL;
+    CHECK(df_groupby_multi(df, keys, 2, aggs, 4, &out) == DF_OK);
+    CHECK(df_nrows(out) == 3);          /* (IT,Delhi) (IT,Pune) (Sales,Pune) */
+    CHECK(df_ncols(out) == 6);
+    CHECK(same_string(cell_string(out, "dept", 0), "IT"));
+    CHECK(same_string(cell_string(out, "city", 0), "Delhi"));
+    CHECK(same_string(cell_string(out, "city", 1), "Pune"));
+    CHECK(same_string(cell_string(out, "dept", 2), "Sales"));
+    CHECK(cell_float(out, "salary_sum", 1) == 50.0);
+    CHECK(cell_int(out, "salary_count", 2) == 1);
+    CHECK(cell_int(out, "city_nunique", 1) == 1);
+    const Series *col = NULL;
+    df_get_column(out, "city_nunique", &col);
+    CHECK(series_dtype(col) == DTYPE_INT);
+    CHECK(close_to(cell_float(out, "salary_std", 1) *
+                   cell_float(out, "salary_std", 1), 450.0));
+    CHECK(cell_missing(out, "salary_std", 0));      /* one value only */
+    df_free(out);
+
+    /* errors */
+    out = (DataFrame *)1;
+    CHECK(df_groupby_multi(df, keys, 0, aggs, 1, &out) == DF_ERR_INVALID_ARG);
+    CHECK(out == NULL);
+    const char *twice[] = {"dept", "dept"};
+    CHECK(df_groupby_multi(df, twice, 2, NULL, 0, &out) ==
+          DF_ERR_DUPLICATE_NAME);
+    const char *unknown[] = {"dept", "nope"};
+    CHECK(df_groupby_multi(df, unknown, 2, NULL, 0, &out) == DF_ERR_NOT_FOUND);
+    CHECK(df_groupby_multi(df, NULL, 1, NULL, 0, &out) == DF_ERR_NULL_ARG);
+    df_aggregation text_std[] = {{"city", DF_AGG_STD}};
+    CHECK(df_groupby_multi(df, keys, 1, text_std, 1, &out) ==
+          DF_ERR_TYPE_MISMATCH);
+    df_free(df);
+}
+
+/* Random tables with few different keys and some missing cells. The
+   result is checked against a slow, obviously correct version: for every
+   (a, b) key pair, scan all the rows. */
+static void test_random_against_slow_version(void)
+{
+    enum { N = 2000 };
+    int64_t a[N], b[N], v[N];
+    srand(2024);
+    for (int round = 0; round < 5; round++) {
+        for (int i = 0; i < N; i++) {
+            a[i] = (rand() % 10 == 0) ? MISSING_NUM : rand() % 7 - 3;
+            b[i] = (rand() % 10 == 0) ? MISSING_NUM : rand() % 5;
+            v[i] = (rand() % 8 == 0) ? MISSING_NUM : rand() % 1000;
+        }
+        DataFrame *df = new_frame();
+        add_column(df, make_int_column("a", a, N));
+        add_column(df, make_int_column("b", b, N));
+        add_column(df, make_int_column("v", v, N));
+
+        const char *keys[] = {"a", "b"};
+        df_aggregation aggs[] = {{"v", DF_AGG_SUM}, {"v", DF_AGG_COUNT}};
+        DataFrame *out = NULL;
+        CHECK(df_groupby_multi(df, keys, 2, aggs, 2, &out) == DF_OK);
+
+        int ok = 1;
+        size_t row = 0;
+        for (int64_t ka = -3; ka <= 3; ka++) {          /* sorted order */
+            for (int64_t kb = 0; kb < 5; kb++) {
+                int64_t sum = 0, count = 0, rows = 0;
+                for (int i = 0; i < N; i++) {
+                    if (a[i] == ka && b[i] == kb) {
+                        rows++;
+                        if (v[i] != MISSING_NUM) {
+                            sum += v[i];
+                            count++;
+                        }
+                    }
+                }
+                if (rows == 0) {
+                    continue;   /* this pair never appears: no group */
+                }
+                ok = ok && row < df_nrows(out) &&
+                     cell_int(out, "a", row) == ka &&
+                     cell_int(out, "b", row) == kb &&
+                     cell_float(out, "v_sum", row) == (double)sum &&
+                     cell_int(out, "v_count", row) == count;
+                row++;
+            }
+        }
+        ok = ok && row == df_nrows(out);
+        CHECK(ok);
+        df_free(out);
+        df_free(df);
+    }
+}
+
 int main(void)
 {
     test_basic_groupby();
@@ -233,5 +353,7 @@ int main(void)
     test_errors();
     test_empty_and_all_missing_keys();
     test_large();
+    test_multi_key();
+    test_random_against_slow_version();
     return finish_tests();
 }

@@ -1,16 +1,23 @@
 /*
- * df_join.c - merge two DataFrames on a key column.
+ * df_join.c - merge two DataFrames on one or more key columns.
  *
- * How it works:
- *   1. Compare every left row with every right row (two nested loops) and
- *      write down each matching pair (left row, right row) in a PairList.
- *      For left/right/outer joins, a row with no partner is paired with
+ * How it works (a "hash join"):
+ *   1. Build a hash table of one frame's keys (df_keyindex.c): every
+ *      different key with the list of its rows. That is the right frame,
+ *      or the left frame for a right join.
+ *   2. Go through the rows of the other frame and look each key up in the
+ *      table: O(1) on average instead of comparing with every row. Write
+ *      down each matching pair (left row, right row) in a PairList. For
+ *      left/right/outer joins, a row with no partner is paired with
  *      SERIES_TAKE_MISSING, which series_take() turns into a missing cell.
- *   2. Build every result column with series_take() using the left (or
+ *   3. Build every result column with series_take() using the left (or
  *      right) row numbers of the pairs.
+ * Total O(n + m + number of result rows), where the first version (two
+ * nested loops comparing every pair) was O(n * m). The pairs come out in
+ * exactly the same order as before.
  */
 #include "df_join.h"
-#include "df_sort.h"
+#include "df_keyindex.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -58,97 +65,93 @@ static df_status add_pair(PairList *pairs, size_t left_row, size_t right_row)
     return DF_OK;
 }
 
-/* Two key cells match if neither is missing and they are equal. */
-static int keys_match(const Series *left_key, size_t i,
-                      const Series *right_key, size_t j)
+/* RIGHT join: index the left keys, then go through the right rows. */
+static df_status find_pairs_right(const Series *const *left_keys,
+                                  size_t nleft,
+                                  const Series *const *right_keys,
+                                  size_t nright, size_t nkeys,
+                                  PairList *pairs)
 {
-    if (series_is_missing(left_key, i) || series_is_missing(right_key, j)) {
-        return 0;
+    KeyIndex left_index;
+    df_status st = key_index_build(&left_index, left_keys, nkeys, nleft);
+    if (st != DF_OK) {
+        return st;
     }
-    if (series_compare_cells(left_key, i, right_key, j) == 0) {
-        return 1;
+
+    for (size_t j = 0; j < nright && st == DF_OK; j++) {
+        size_t g = key_index_find(&left_index, right_keys, j);
+        if (g == KEY_NO_GROUP) {
+            st = add_pair(pairs, SERIES_TAKE_MISSING, j);
+            continue;
+        }
+        /* every left row with this key, in left row order */
+        for (size_t k = left_index.start[g];
+             k < left_index.start[g + 1] && st == DF_OK; k++) {
+            st = add_pair(pairs, left_index.members[k], j);
+        }
     }
-    return 0;
+
+    key_index_free(&left_index);
+    return st;
 }
 
-/* Fills pairs with the matching rows for the chosen join type. */
-static df_status find_pairs(const Series *left_key, const Series *right_key,
-                            df_join_type how, PairList *pairs)
+/* INNER, LEFT and OUTER joins: index the right keys, then go through the
+   left rows. */
+static df_status find_pairs_left(const Series *const *left_keys,
+                                 size_t nleft,
+                                 const Series *const *right_keys,
+                                 size_t nright, size_t nkeys,
+                                 df_join_type how, PairList *pairs)
 {
-    size_t nleft = series_len(left_key);
-    size_t nright = series_len(right_key);
-    df_status st = DF_OK;
-
-    if (how == DF_JOIN_RIGHT) {
-        /* Go through the right rows, and look for partners on the left. */
-        for (size_t j = 0; j < nright; j++) {
-            int found = 0;
-            for (size_t i = 0; i < nleft; i++) {
-                if (keys_match(left_key, i, right_key, j)) {
-                    st = add_pair(pairs, i, j);
-                    if (st != DF_OK) return st;
-                    found = 1;
-                }
-            }
-            if (!found) {
-                st = add_pair(pairs, SERIES_TAKE_MISSING, j);
-                if (st != DF_OK) return st;
-            }
-        }
-        return DF_OK;
+    KeyIndex right_index;
+    df_status st = key_index_build(&right_index, right_keys, nkeys, nright);
+    if (st != DF_OK) {
+        return st;
     }
 
-    /* INNER, LEFT and OUTER: go through the left rows. For OUTER we also
-       remember which right rows got a partner (right_used[j] = 1). */
-    unsigned char *right_used = NULL;
+    /* For OUTER we also remember which right groups got a partner. The +1
+       keeps the size above 0, so the pointer is never NULL. */
+    unsigned char *group_used = NULL;
     if (how == DF_JOIN_OUTER) {
-        /* calloc sets everything to 0. The +1 keeps the size above 0, so
-           right_used is never NULL for an outer join. */
-        right_used = calloc(nright + 1, 1);
-        if (right_used == NULL) {
+        group_used = calloc(right_index.ngroups + 1, 1);
+        if (group_used == NULL) {
+            key_index_free(&right_index);
             return DF_ERR_NOMEM;
         }
     }
 
-    for (size_t i = 0; i < nleft; i++) {
-        int found = 0;
-        for (size_t j = 0; j < nright; j++) {
-            if (keys_match(left_key, i, right_key, j)) {
-                st = add_pair(pairs, i, j);
-                if (st != DF_OK) {
-                    free(right_used);
-                    return st;
-                }
-                found = 1;
-                if (right_used != NULL) {
-                    right_used[j] = 1;
-                }
+    for (size_t i = 0; i < nleft && st == DF_OK; i++) {
+        size_t g = key_index_find(&right_index, left_keys, i);
+        if (g == KEY_NO_GROUP) {
+            if (how != DF_JOIN_INNER) {
+                st = add_pair(pairs, i, SERIES_TAKE_MISSING);
             }
+            continue;
         }
-        if (!found && how != DF_JOIN_INNER) {
-            st = add_pair(pairs, i, SERIES_TAKE_MISSING);
-            if (st != DF_OK) {
-                free(right_used);
-                return st;
-            }
+        /* every right row with this key, in right row order */
+        for (size_t k = right_index.start[g];
+             k < right_index.start[g + 1] && st == DF_OK; k++) {
+            st = add_pair(pairs, i, right_index.members[k]);
+        }
+        if (group_used != NULL) {
+            group_used[g] = 1;
         }
     }
 
-    /* OUTER: add the right rows that never matched, at the end. */
+    /* OUTER: add the right rows that never matched, in right row order.
+       That is a row with a missing key, or whose group was never used. */
     if (how == DF_JOIN_OUTER) {
-        for (size_t j = 0; j < nright; j++) {
-            if (right_used[j] == 0) {
+        for (size_t j = 0; j < nright && st == DF_OK; j++) {
+            size_t g = key_index_find(&right_index, right_keys, j);
+            if (g == KEY_NO_GROUP || group_used[g] == 0) {
                 st = add_pair(pairs, SERIES_TAKE_MISSING, j);
-                if (st != DF_OK) {
-                    free(right_used);
-                    return st;
-                }
             }
         }
     }
 
-    free(right_used);
-    return DF_OK;
+    free(group_used);
+    key_index_free(&right_index);
+    return st;
 }
 
 /* Copies cell src[si] into dst[di]. Both Series have the same dtype. */
@@ -158,19 +161,34 @@ static df_status copy_cell(Series *dst, size_t di, const Series *src, size_t si)
         return series_set_missing(dst, di);
     }
 
-    if (series_dtype(src) == DTYPE_INT) {
+    switch (series_dtype(src)) {
+    case DTYPE_INT: {
         int64_t v = 0;
         series_get_int(src, si, &v);
         return series_set_int(dst, di, v);
     }
-    if (series_dtype(src) == DTYPE_FLOAT) {
+    case DTYPE_FLOAT: {
         double v = 0.0;
         series_get_float(src, si, &v);
         return series_set_float(dst, di, v);
     }
-    const char *v = NULL;
-    series_get_string(src, si, &v);
-    return series_set_string(dst, di, v);
+    case DTYPE_BOOL: {
+        int v = 0;
+        series_get_bool(src, si, &v);
+        return series_set_bool(dst, di, v);
+    }
+    case DTYPE_DATE: {
+        int64_t v = 0;
+        series_get_date(src, si, &v);
+        return series_set_date(dst, di, v);
+    }
+    case DTYPE_STRING: {
+        const char *v = NULL;
+        series_get_string(src, si, &v);
+        return series_set_string(dst, di, v);
+    }
+    }
+    return DF_ERR_INVALID_ARG;
 }
 
 /* Renames s to "<its name><suffix>", e.g. "name" -> "name_left". */
@@ -198,6 +216,18 @@ static int has_column(const DataFrame *df, const char *name)
     return 0;
 }
 
+/* The position of `name` in on[0..non-1], or non if it is not a key. */
+static size_t key_position(const char *name, const char *const *on,
+                           size_t non)
+{
+    for (size_t k = 0; k < non; k++) {
+        if (strcmp(name, on[k]) == 0) {
+            return k;
+        }
+    }
+    return non;
+}
+
 /* Adds column `col`, using the row numbers in rows[0..n-1], to `result`.
    suffix is added to the name if it is not NULL. */
 static df_status add_joined_column(DataFrame *result, const Series *col,
@@ -223,45 +253,52 @@ static df_status add_joined_column(DataFrame *result, const Series *col,
     return st;
 }
 
+/* Adds key column `col` of the left frame. Rows that exist only in the
+   right frame have no left key, so their key is copied from right_key. */
+static df_status add_key_column(DataFrame *result, const Series *col,
+                                const Series *right_key, df_join_type how,
+                                const PairList *pairs)
+{
+    Series *part = NULL;
+    df_status st = series_take(col, pairs->left, pairs->count, &part);
+    if (st != DF_OK) {
+        return st;
+    }
+    if (how == DF_JOIN_RIGHT || how == DF_JOIN_OUTER) {
+        for (size_t k = 0; k < pairs->count && st == DF_OK; k++) {
+            if (pairs->left[k] == SERIES_TAKE_MISSING) {
+                st = copy_cell(part, k, right_key, pairs->right[k]);
+            }
+        }
+    }
+    if (st == DF_OK) {
+        st = df_add_column(result, part);
+    }
+    if (st != DF_OK) {
+        series_free(part);
+    }
+    return st;
+}
+
 /* Builds the result frame from the list of pairs. */
 static df_status build_result(const DataFrame *left, const DataFrame *right,
-                              const char *on, df_join_type how,
-                              const PairList *pairs, DataFrame *result)
+                              const char *const *on, size_t non,
+                              const Series *const *right_keys,
+                              df_join_type how, const PairList *pairs,
+                              DataFrame *result)
 {
-    const Series *right_key = NULL;
-    df_get_column(right, on, &right_key);   /* checked by df_merge */
     df_status st = DF_OK;
 
     /* 1. All the left columns. */
     size_t nleft_cols = df_ncols(left);
-    for (size_t c = 0; c < nleft_cols; c++) {
+    for (size_t c = 0; c < nleft_cols && st == DF_OK; c++) {
         const Series *col = NULL;
         df_get_column_at(left, c, &col);
         const char *name = series_name(col);
+        size_t k = key_position(name, on, non);
 
-        if (strcmp(name, on) == 0) {
-            /* The key column. */
-            Series *part = NULL;
-            st = series_take(col, pairs->left, pairs->count, &part);
-            if (st != DF_OK) {
-                return st;
-            }
-            /* Rows that exist only in the right frame have no left key,
-               so copy the key from the right frame instead. */
-            if (how == DF_JOIN_RIGHT || how == DF_JOIN_OUTER) {
-                for (size_t k = 0; k < pairs->count && st == DF_OK; k++) {
-                    if (pairs->left[k] == SERIES_TAKE_MISSING) {
-                        st = copy_cell(part, k, right_key, pairs->right[k]);
-                    }
-                }
-            }
-            if (st == DF_OK) {
-                st = df_add_column(result, part);
-            }
-            if (st != DF_OK) {
-                series_free(part);
-                return st;
-            }
+        if (k < non) {
+            st = add_key_column(result, col, right_keys[k], how, pairs);
         } else if (has_column(right, name)) {
             /* Same name on both sides: call this one "<name>_left". */
             st = add_joined_column(result, col, pairs->left, pairs->count,
@@ -270,19 +307,16 @@ static df_status build_result(const DataFrame *left, const DataFrame *right,
             st = add_joined_column(result, col, pairs->left, pairs->count,
                                    NULL);
         }
-        if (st != DF_OK) {
-            return st;
-        }
     }
 
-    /* 2. The right columns, except the key (it is already there). */
+    /* 2. The right columns, except the keys (they are already there). */
     size_t nright_cols = df_ncols(right);
-    for (size_t c = 0; c < nright_cols; c++) {
+    for (size_t c = 0; c < nright_cols && st == DF_OK; c++) {
         const Series *col = NULL;
         df_get_column_at(right, c, &col);
         const char *name = series_name(col);
 
-        if (strcmp(name, on) == 0) {
+        if (key_position(name, on, non) < non) {
             continue;
         }
         if (has_column(left, name)) {
@@ -292,17 +326,45 @@ static df_status build_result(const DataFrame *left, const DataFrame *right,
             st = add_joined_column(result, col, pairs->right, pairs->count,
                                    NULL);
         }
+    }
+    return st;
+}
+
+/* Looks up the key columns in both frames and checks their types. */
+static df_status find_keys(const DataFrame *left, const DataFrame *right,
+                           const char *const *on, size_t non,
+                           const Series **left_keys,
+                           const Series **right_keys)
+{
+    for (size_t k = 0; k < non; k++) {
+        if (on[k] == NULL) {
+            return DF_ERR_NULL_ARG;
+        }
+        for (size_t j = 0; j < k; j++) {
+            if (strcmp(on[j], on[k]) == 0) {
+                return DF_ERR_DUPLICATE_NAME;
+            }
+        }
+        df_status st = df_get_column(left, on[k], &left_keys[k]);
         if (st != DF_OK) {
             return st;
+        }
+        st = df_get_column(right, on[k], &right_keys[k]);
+        if (st != DF_OK) {
+            return st;
+        }
+        if (series_dtype(left_keys[k]) != series_dtype(right_keys[k])) {
+            return DF_ERR_TYPE_MISMATCH;
         }
     }
     return DF_OK;
 }
 
-/* ---- public function ---------------------------------------------------- */
+/* ---- public functions --------------------------------------------------- */
 
-df_status df_merge(const DataFrame *left, const DataFrame *right,
-                   const char *on, df_join_type how, DataFrame **out)
+df_status df_merge_on(const DataFrame *left, const DataFrame *right,
+                      const char *const *on, size_t non, df_join_type how,
+                      DataFrame **out)
 {
     if (out == NULL) {
         return DF_ERR_NULL_ARG;
@@ -311,45 +373,52 @@ df_status df_merge(const DataFrame *left, const DataFrame *right,
     if (left == NULL || right == NULL || on == NULL) {
         return DF_ERR_NULL_ARG;
     }
+    if (non == 0) {
+        return DF_ERR_INVALID_ARG;
+    }
     if (how != DF_JOIN_INNER && how != DF_JOIN_LEFT &&
         how != DF_JOIN_RIGHT && how != DF_JOIN_OUTER) {
         return DF_ERR_INVALID_ARG;
     }
 
-    /* Both frames need the key column, with the same type. */
-    const Series *left_key = NULL;
-    const Series *right_key = NULL;
-    df_status st = df_get_column(left, on, &left_key);
-    if (st != DF_OK) {
-        return st;
+    /* Both frames need every key column, with the same types. */
+    const Series **left_keys = malloc(non * sizeof(const Series *));
+    const Series **right_keys = malloc(non * sizeof(const Series *));
+    if (left_keys == NULL || right_keys == NULL) {
+        free(left_keys);
+        free(right_keys);
+        return DF_ERR_NOMEM;
     }
-    st = df_get_column(right, on, &right_key);
-    if (st != DF_OK) {
-        return st;
-    }
-    if (series_dtype(left_key) != series_dtype(right_key)) {
-        return DF_ERR_TYPE_MISMATCH;
-    }
+    df_status st = find_keys(left, right, on, non, left_keys, right_keys);
 
-    /* Step 1: find the matching rows. */
+    /* Step 1 and 2: find the matching rows. */
     PairList pairs;
     pairs.left = NULL;
     pairs.right = NULL;
     pairs.count = 0;
     pairs.cap = 0;
-    st = find_pairs(left_key, right_key, how, &pairs);
+    if (st == DF_OK && how == DF_JOIN_RIGHT) {
+        st = find_pairs_right(left_keys, df_nrows(left), right_keys,
+                              df_nrows(right), non, &pairs);
+    } else if (st == DF_OK) {
+        st = find_pairs_left(left_keys, df_nrows(left), right_keys,
+                             df_nrows(right), non, how, &pairs);
+    }
 
-    /* Step 2: build the result frame. */
+    /* Step 3: build the result frame. */
     DataFrame *result = NULL;
     if (st == DF_OK) {
         st = df_create(&result);
     }
     if (st == DF_OK) {
-        st = build_result(left, right, on, how, &pairs, result);
+        st = build_result(left, right, on, non, right_keys, how, &pairs,
+                          result);
     }
 
     free(pairs.left);
     free(pairs.right);
+    free(left_keys);
+    free(right_keys);
 
     if (st != DF_OK) {
         df_free(result);    /* safe even if result is NULL */
@@ -357,4 +426,19 @@ df_status df_merge(const DataFrame *left, const DataFrame *right,
     }
     *out = result;
     return DF_OK;
+}
+
+df_status df_merge(const DataFrame *left, const DataFrame *right,
+                   const char *on, df_join_type how, DataFrame **out)
+{
+    if (out == NULL) {
+        return DF_ERR_NULL_ARG;
+    }
+    *out = NULL;
+    if (on == NULL) {
+        return DF_ERR_NULL_ARG;
+    }
+    const char *keys[1];
+    keys[0] = on;
+    return df_merge_on(left, right, keys, 1, how, out);
 }

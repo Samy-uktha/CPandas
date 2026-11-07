@@ -168,6 +168,142 @@ static void test_large(void)
     series_free(s);
 }
 
+/* ---- variance, std, quantiles, nunique, bools, describe ----------------- */
+
+static void test_spread_and_quantiles(void)
+{
+    /* 2 4 4 4 5 5 7 9 (+ a missing cell): mean 5, sample var 32/7 */
+    int64_t values[] = {2, 4, 4, MISSING_NUM, 4, 5, 5, 7, 9};
+    Series *s = make_int_column("v", values, 9);
+    double out = 0.0;
+
+    CHECK(series_var(s, &out) == DF_OK && close_to(out, 32.0 / 7.0));
+    CHECK(series_std(s, &out) == DF_OK && close_to(out * out, 32.0 / 7.0));
+    CHECK(series_quantile(s, 0.0, &out) == DF_OK && close_to(out, 2.0));
+    CHECK(series_quantile(s, 1.0, &out) == DF_OK && close_to(out, 9.0));
+    CHECK(series_quantile(s, 0.5, &out) == DF_OK && close_to(out, 4.5));
+    /* position 0.25 * 7 = 1.75: between 4 and 4 */
+    CHECK(series_quantile(s, 0.25, &out) == DF_OK && close_to(out, 4.0));
+    /* position 0.75 * 7 = 5.25: 5 + 0.25 * (7 - 5) */
+    CHECK(series_quantile(s, 0.75, &out) == DF_OK && close_to(out, 5.5));
+    /* position 0.9 * 7 = 6.3: 7 + 0.3 * (9 - 7) */
+    CHECK(series_quantile(s, 0.9, &out) == DF_OK && close_to(out, 7.6));
+    CHECK(series_quantile(s, 1.5, &out) == DF_ERR_INVALID_ARG);
+    CHECK(series_quantile(s, -0.1, &out) == DF_ERR_INVALID_ARG);
+
+    size_t n = 0;
+    CHECK(series_nunique(s, &n) == DF_OK && n == 5);    /* 2 4 5 7 9 */
+    CHECK(series_aggregate(s, DF_AGG_NUNIQUE, &out) == DF_OK && out == 5.0);
+    CHECK(series_aggregate(s, DF_AGG_STD, &out) == DF_OK);
+    CHECK(series_aggregate(s, DF_AGG_VAR, &out) == DF_OK &&
+          close_to(out, 32.0 / 7.0));
+    CHECK(same_string(df_agg_name(DF_AGG_STD), "std"));
+    CHECK(same_string(df_agg_name(DF_AGG_VAR), "var"));
+    CHECK(same_string(df_agg_name(DF_AGG_NUNIQUE), "nunique"));
+    series_free(s);
+
+    /* fewer than two values: no variance */
+    int64_t one[] = {MISSING_NUM, 3};
+    s = make_int_column("one", one, 2);
+    out = 123.0;
+    CHECK(series_var(s, &out) == DF_ERR_MISSING_VALUE && out == 123.0);
+    CHECK(series_std(s, &out) == DF_ERR_MISSING_VALUE);
+    CHECK(series_quantile(s, 0.3, &out) == DF_OK && out == 3.0);
+    series_free(s);
+
+    /* nunique of text, with missing cells */
+    const char *words[] = {"b", "a", NULL, "b", "c", NULL, "a"};
+    s = make_string_column("w", words, 7);
+    CHECK(series_nunique(s, &n) == DF_OK && n == 3);
+    CHECK(series_std(s, &out) == DF_ERR_TYPE_MISMATCH);
+    CHECK(series_quantile(s, 0.5, &out) == DF_ERR_TYPE_MISMATCH);
+    series_free(s);
+
+    /* nunique of floats: 0.0 and -0.0 are the same value */
+    double fl[] = {0.0, -0.0, 1.5, 1.5, MISSING_NUM};
+    s = make_float_column("f", fl, 5);
+    CHECK(series_nunique(s, &n) == DF_OK && n == 2);
+    series_free(s);
+
+    CHECK(series_nunique(NULL, &n) == DF_ERR_NULL_ARG);
+    CHECK(series_var(NULL, &out) == DF_ERR_NULL_ARG);
+}
+
+static void test_bool_numbers(void)
+{
+    Series *s = NULL;
+    series_create("ok", DTYPE_BOOL, 0, &s);
+    series_append_bool(s, 1);
+    series_append_bool(s, 0);
+    series_append_bool(s, 1);
+    series_append_missing(s);
+    series_append_bool(s, 1);
+    double out = 0.0;
+    CHECK(series_sum(s, &out) == DF_OK && out == 3.0);
+    CHECK(series_mean(s, &out) == DF_OK && close_to(out, 0.75));
+    CHECK(series_min(s, &out) == DF_OK && out == 0.0);
+    size_t n = 0;
+    CHECK(series_nunique(s, &n) == DF_OK && n == 2);
+    series_free(s);
+
+    /* dates are not numbers here */
+    series_create("d", DTYPE_DATE, 0, &s);
+    series_append_date(s, 10);
+    series_append_date(s, 10);
+    CHECK(series_mean(s, &out) == DF_ERR_TYPE_MISMATCH);
+    CHECK(series_nunique(s, &n) == DF_OK && n == 1);
+    series_free(s);
+}
+
+static void test_describe(void)
+{
+    int64_t ages[] = {25, 32, MISSING_NUM, 41};
+    double scores[] = {4.5, MISSING_NUM, MISSING_NUM, MISSING_NUM};
+    const char *names[] = {"A", "B", "C", "D"};
+    DataFrame *df = new_frame();
+    add_column(df, make_string_column("name", names, 4));
+    add_column(df, make_int_column("age", ages, 4));
+    add_column(df, make_float_column("score", scores, 4));
+
+    DataFrame *out = NULL;
+    CHECK(df_describe(df, &out) == DF_OK);
+    CHECK(df_ncols(out) == 3);          /* stat, age, score; no "name" */
+    CHECK(df_nrows(out) == 8);
+    const char *labels[] = {"count", "mean", "std", "min",
+                            "25%", "50%", "75%", "max"};
+    for (size_t r = 0; r < 8; r++) {
+        CHECK(same_string(cell_string(out, "stat", r), labels[r]));
+    }
+    CHECK(cell_float(out, "age", 0) == 3.0);
+    CHECK(close_to(cell_float(out, "age", 1), 98.0 / 3.0));
+    CHECK(cell_float(out, "age", 3) == 25.0);
+    CHECK(close_to(cell_float(out, "age", 4), 28.5));   /* 25 + .5 * 7 */
+    CHECK(cell_float(out, "age", 5) == 32.0);
+    CHECK(close_to(cell_float(out, "age", 6), 36.5));
+    CHECK(cell_float(out, "age", 7) == 41.0);
+    /* one value: std is missing, the rest are that value */
+    CHECK(cell_float(out, "score", 0) == 1.0);
+    CHECK(cell_missing(out, "score", 2));
+    CHECK(cell_float(out, "score", 5) == 4.5);
+    df_free(out);
+
+    /* no number columns: just the labels */
+    DataFrame *text_only = new_frame();
+    add_column(text_only, make_string_column("name", names, 4));
+    CHECK(df_describe(text_only, &out) == DF_OK);
+    CHECK(df_ncols(out) == 1 && df_nrows(out) == 8);
+    df_free(out);
+    df_free(text_only);
+
+    /* a number column called "stat" clashes with the label column */
+    CHECK(df_rename_column(df, "age", "stat") == DF_OK);
+    out = (DataFrame *)1;
+    CHECK(df_describe(df, &out) == DF_ERR_DUPLICATE_NAME);
+    CHECK(out == NULL);
+    CHECK(df_describe(NULL, &out) == DF_ERR_NULL_ARG);
+    df_free(df);
+}
+
 int main(void)
 {
     test_int_series();
@@ -179,5 +315,8 @@ int main(void)
     test_null_args();
     test_on_dataframe_column();
     test_large();
+    test_spread_and_quantiles();
+    test_bool_numbers();
+    test_describe();
     return finish_tests();
 }
