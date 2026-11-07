@@ -6,6 +6,13 @@ and their tests. The data layer (Series, DataFrame container, CSV reader and
 writer, error codes) is Part A, documented in
 [part_a_data_layer.md](part_a_data_layer.md).
 
+> **Later extensions.** Since this was written, group-by and join use hash
+> tables and accept several key columns, and there are new statistics (std,
+> var, quantiles, nunique, describe), stacking (`df_concat`) and computed
+> columns (`df_compute`). These are described in
+> [extensions.md](extensions.md). Sections 4.3, 4.4 and 9 below describe
+> the first version.
+
 ---
 
 ## 1. Overview
@@ -184,6 +191,9 @@ is why missing cells stay last in both directions.
 
 ### 4.3 Group-by by sorting
 
+*(First version. Group-by now finds the groups with a hash table and sorts
+only the group keys; see extensions.md section 4.)*
+
 Sorting the row numbers by key places equal keys next to each other.
 Missing keys go to the end, where they are simply ignored. One pass then
 finds where each new key starts. For each group and each aggregation, the
@@ -194,6 +204,9 @@ it twice. As a side effect, the groups come out sorted by key, like pandas'
 default `sort=True`.
 
 ### 4.4 Join by nested loops
+
+*(First version. The join is now a hash join with the same output order;
+see extensions.md section 4.)*
 
 Each left row is compared with each right row using `series_compare_cells`.
 Every match is appended to the `PairList`. Then:

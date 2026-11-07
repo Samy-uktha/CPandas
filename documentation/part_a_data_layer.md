@@ -6,6 +6,13 @@ error-code mechanism. What you can do with a DataFrame once it exists
 (filter, sort, group-by, join, …) is Part B, documented in
 [part_b_query_layer.md](part_b_query_layer.md).
 
+> **Later extensions.** Since this was written, the data layer gained
+> BOOL and DATE columns, storage that keeps each repeated text only once,
+> CSV reading in 64 KB pieces and in chunks, and error reports with line
+> numbers. These are described in [extensions.md](extensions.md).
+> Sections below that say otherwise (for example in Limitations) describe
+> the first version.
+
 | Module | Header | Source | Tests |
 |---|---|---|---|
 | Error codes | `df_error.h` | `df_error.c` | (in `test_series.c`) |
@@ -281,7 +288,8 @@ error cases) are listed at the top of `csv.h`.
 
 - **The whole CSV file is loaded into memory** (text plus the parsed
   rows) before the frame is built. Very large files need about 2–3× their
-  size in RAM.
+  size in RAM. *(Fixed later: the file is now read in 64 KB pieces, and
+  `df_read_csv_chunks` reads a file of any size; see extensions.md.)*
 - **Type inference is all-or-nothing per column.** One non-number cell
   makes the whole column STRING. Text that looks like a number (such as
   postcode `"007"`) becomes INT and loses its leading zeros, even when it
@@ -290,9 +298,11 @@ error cases) are listed at the top of `csv.h`.
   empty string in a STRING column is written as `""` and read back as
   missing. A cell whose text equals one of `na_values` is read as missing
   even if it was quoted.
-- **No dates or booleans:** these columns are read as STRING.
+- **No dates or booleans:** these columns are read as STRING. *(Fixed
+  later: DTYPE_BOOL and DTYPE_DATE; see extensions.md.)*
 - **No error line number:** a malformed CSV gives `DF_ERR_PARSE`, but not
-  the line where the problem is.
+  the line where the problem is. *(Fixed later: `opts.error`; see
+  extensions.md.)*
 - **Encoding:** text is read and written as raw bytes. UTF-8 works, but
   `df_print` counts bytes, not characters, so non-ASCII text can make the
   columns line up slightly wrong.
