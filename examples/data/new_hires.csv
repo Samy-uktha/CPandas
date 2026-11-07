@@ -1,0 +1,5 @@
+id,name,dept,age,salary,rating,joined,remote
+9,Isha,IT,26,61000,4.0,2024-07-01,True
+10,Jay,Sales,31,47000,,2024-09-16,False
+11,Kiran,HR,,53000,4.3,2025-01-06,True
+12,Leela,IT,44,80000,4.6,2025-02-17,False

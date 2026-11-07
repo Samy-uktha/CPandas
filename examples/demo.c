@@ -11,7 +11,10 @@
  *
  * Try it with the files in examples/data/:
  *     demo examples/data/employees.csv
- * and join with examples/data/departments.csv on "dept".
+ * and join with examples/data/departments.csv on "dept", stack
+ * examples/data/new_hires.csv under it (it adds a date and a true/false
+ * column), or load examples/data/broken.csv to see an error with its line
+ * number.
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -75,6 +78,8 @@ static const char *type_name(df_dtype type)
 {
     if (type == DTYPE_INT) return "int";
     if (type == DTYPE_FLOAT) return "float";
+    if (type == DTYPE_BOOL) return "bool";
+    if (type == DTYPE_DATE) return "date";
     return "string";
 }
 
@@ -104,6 +109,30 @@ static int check(df_status st)
         return 0;
     }
     return 1;
+}
+
+/* Reads a CSV file. If it fails, says where: the line (and field) of the
+   problem and what is wrong. Returns 1 on success. */
+static int load_csv(const char *path, DataFrame **out)
+{
+    csv_error where;
+    csv_options opts = csv_default_options();
+    opts.error = &where;
+    df_status st = df_read_csv(path, &opts, out);
+    if (st == DF_OK) {
+        return 1;
+    }
+    printf("Error: %s", df_strerror(st));
+    if (where.line > 0 && where.field > 0) {
+        printf(" (line %zu, field %zu: %s)", where.line, where.field,
+               where.message);
+    } else if (where.line > 0) {
+        printf(" (line %zu: %s)", where.line, where.message);
+    } else if (where.message[0] != '\0') {
+        printf(" (%s)", where.message);
+    }
+    printf("\n");
+    return 0;
 }
 
 /* Shows a new result table and asks whether to keep it as the current
@@ -139,13 +168,23 @@ static int parse_op(const char *text, df_compare_op *op)
 static int parse_agg(const char *text, df_agg_func *func)
 {
     df_agg_func all[] = {DF_AGG_COUNT, DF_AGG_SUM, DF_AGG_MEAN,
-                         DF_AGG_MEDIAN, DF_AGG_MIN, DF_AGG_MAX};
-    for (int k = 0; k < 6; k++) {
+                         DF_AGG_MEDIAN, DF_AGG_MIN, DF_AGG_MAX,
+                         DF_AGG_STD, DF_AGG_VAR, DF_AGG_NUNIQUE};
+    for (int k = 0; k < 9; k++) {
         if (strcmp(text, df_agg_name(all[k])) == 0) {
             *func = all[k];
             return 1;
         }
     }
+    return 0;
+}
+
+static int parse_arith(const char *text, df_arith_op *op)
+{
+    if (strcmp(text, "+") == 0) { *op = DF_ARITH_ADD; return 1; }
+    if (strcmp(text, "-") == 0) { *op = DF_ARITH_SUB; return 1; }
+    if (strcmp(text, "*") == 0) { *op = DF_ARITH_MUL; return 1; }
+    if (strcmp(text, "/") == 0) { *op = DF_ARITH_DIV; return 1; }
     return 0;
 }
 
@@ -166,7 +205,7 @@ static void do_load_csv(DataFrame **current)
     if (!read_line("CSV file path: ", path, sizeof path)) return;
 
     DataFrame *loaded = NULL;
-    if (check(df_read_csv(path, NULL, &loaded))) {
+    if (load_csv(path, &loaded)) {
         df_free(*current);
         *current = loaded;
         printf("Loaded %zu rows x %zu columns.\n", df_nrows(loaded),
@@ -272,6 +311,25 @@ static void do_filter(DataFrame **current)
 
         if (series_dtype(col) == DTYPE_STRING) {
             st = df_filter_string(*current, column, op, value, &result);
+        } else if (series_dtype(col) == DTYPE_DATE) {
+            /* date column: the value must be a date */
+            int64_t days = 0;
+            if (df_date_parse(value, &days) != DF_OK) {
+                printf("'%s' is not a date (use YYYY-MM-DD).\n", value);
+                return;
+            }
+            st = df_filter_date(*current, column, op, days, &result);
+        } else if (series_dtype(col) == DTYPE_BOOL) {
+            /* true/false column: compare with 1 or 0 */
+            double number = 0.0;
+            if (strcmp(value, "true") == 0 || strcmp(value, "True") == 0) {
+                number = 1.0;
+            } else if (strcmp(value, "false") != 0 &&
+                       strcmp(value, "False") != 0) {
+                printf("'%s' is not true or false.\n", value);
+                return;
+            }
+            st = df_filter_number(*current, column, op, number, &result);
         } else {
             /* number column: the value must be a number */
             char *end = NULL;
@@ -351,34 +409,56 @@ static void do_stats(const DataFrame *df)
     if (!check(df_get_column(df, column, &col))) return;
 
     size_t count = 0;
+    size_t unique = 0;
     double value = 0.0;
     series_count(col, &count);
     printf("Statistics for '%s' (%zu missing of %zu):\n", column,
            series_count_missing(col), series_len(col));
     printf("  %-7s %zu\n", "count", count);
+    if (check(series_nunique(col, &unique))) {
+        printf("  %-7s %zu\n", "unique", unique);
+    }
+    if (series_dtype(col) == DTYPE_STRING) {
+        /* text is not summed or averaged; show how it is stored instead */
+        printf("  %zu cells, but only %zu different texts are stored\n",
+               series_len(col), series_distinct_strings(col));
+        return;
+    }
     df_status st = series_sum(col, &value);
     print_stat("sum", st, value);
     st = series_mean(col, &value);
     print_stat("mean", st, value);
-    st = series_median(col, &value);
-    print_stat("median", st, value);
+    st = series_std(col, &value);
+    print_stat("std", st, value);
     st = series_min(col, &value);
     print_stat("min", st, value);
+    st = series_quantile(col, 0.25, &value);
+    print_stat("25%", st, value);
+    st = series_median(col, &value);
+    print_stat("median", st, value);
+    st = series_quantile(col, 0.75, &value);
+    print_stat("75%", st, value);
     st = series_max(col, &value);
     print_stat("max", st, value);
 }
 
 static void do_groupby(DataFrame **current)
 {
-    char key[LINE_SIZE];
+    char key_line[LINE_SIZE];
     char line[LINE_SIZE];
+    char *keys[MAX_WORDS];
     char *words[MAX_WORDS];
     df_aggregation aggs[MAX_WORDS / 2];
 
     print_columns(*current);
-    if (!read_line("Group by column: ", key, sizeof key)) return;
+    if (!read_line("Group by column(s): ", key_line, sizeof key_line)) return;
+    int nkeys = split_words(key_line, keys, MAX_WORDS);
+    if (nkeys == 0) {
+        printf("No columns given.\n");
+        return;
+    }
     printf("Type pairs of: column function   (functions: count sum mean "
-           "median min max)\n");
+           "median min max std var nunique)\n");
     printf("Example: salary mean name count\n");
     if (!read_line("Aggregations: ", line, sizeof line)) return;
 
@@ -397,7 +477,9 @@ static void do_groupby(DataFrame **current)
     }
 
     DataFrame *result = NULL;
-    if (check(df_groupby(*current, key, aggs, (size_t)naggs, &result))) {
+    if (check(df_groupby_multi(*current, (const char *const *)keys,
+                               (size_t)nkeys, aggs, (size_t)naggs,
+                               &result))) {
         offer_result(current, result);
     }
 }
@@ -405,17 +487,19 @@ static void do_groupby(DataFrame **current)
 static void do_join(DataFrame **current)
 {
     char path[LINE_SIZE];
-    char key[LINE_SIZE];
+    char key_line[LINE_SIZE];
+    char *keys[MAX_WORDS];
     char how_text[LINE_SIZE];
     df_join_type how;
 
     if (!read_line("CSV file to join with: ", path, sizeof path)) return;
     DataFrame *other = NULL;
-    if (!check(df_read_csv(path, NULL, &other))) return;
+    if (!load_csv(path, &other)) return;
     printf("Other table:");
     show_table(other);
 
-    if (!read_line("Key column (must be in both tables): ", key, sizeof key) ||
+    if (!read_line("Key column(s) (must be in both tables): ", key_line,
+                   sizeof key_line) ||
         !read_line("Join type (inner, left, right, outer): ", how_text,
                    sizeof how_text)) {
         df_free(other);
@@ -427,8 +511,16 @@ static void do_join(DataFrame **current)
         return;
     }
 
+    int nkeys = split_words(key_line, keys, MAX_WORDS);
+    if (nkeys == 0) {
+        printf("No key column given.\n");
+        df_free(other);
+        return;
+    }
+
     DataFrame *result = NULL;
-    df_status st = df_merge(*current, other, key, how, &result);
+    df_status st = df_merge_on(*current, other, (const char *const *)keys,
+                               (size_t)nkeys, how, &result);
     df_free(other);     /* the result is a copy, we don't need it any more */
     if (check(st)) {
         offer_result(current, result);
@@ -478,6 +570,115 @@ static void do_save(const DataFrame *df)
     }
 }
 
+static void do_describe(const DataFrame *df)
+{
+    DataFrame *summary = NULL;
+    if (check(df_describe(df, &summary))) {
+        show_table(summary);
+        df_free(summary);
+    }
+}
+
+static void do_stack(DataFrame **current)
+{
+    char path[LINE_SIZE];
+    if (!read_line("CSV file to stack under this table: ", path,
+                   sizeof path)) return;
+    DataFrame *other = NULL;
+    if (!load_csv(path, &other)) return;
+
+    const DataFrame *parts[2];
+    parts[0] = *current;
+    parts[1] = other;
+    DataFrame *result = NULL;
+    df_status st = df_concat(parts, 2, &result);
+    df_free(other);
+    if (check(st)) {
+        printf("%zu + %zu rows.\n", df_nrows(*current),
+               df_nrows(result) - df_nrows(*current));
+        offer_result(current, result);
+    }
+}
+
+static void do_compute(DataFrame *df)
+{
+    char name[LINE_SIZE];
+    char line[LINE_SIZE];
+    char *words[MAX_WORDS];
+
+    print_columns(df);
+    if (!read_line("New column name: ", name, sizeof name)) return;
+    printf("Type: column op column-or-number   (op: + - * /)\n");
+    printf("Example: salary * 0.1\n");
+    if (!read_line("Formula: ", line, sizeof line)) return;
+    if (split_words(line, words, MAX_WORDS) != 3) {
+        printf("Please type three parts, like: salary * 0.1\n");
+        return;
+    }
+    df_arith_op op;
+    if (!parse_arith(words[1], &op)) {
+        printf("Unknown operation '%s'.\n", words[1]);
+        return;
+    }
+
+    /* the right side is a number if all of it reads as one */
+    char *end = NULL;
+    double number = strtod(words[2], &end);
+    df_status st;
+    if (end != words[2] && *end == '\0') {
+        st = df_add_scalar_column(df, name, words[0], op, number);
+    } else {
+        st = df_add_arith_column(df, name, words[0], op, words[2]);
+    }
+    if (check(st)) {
+        printf("Added '%s'.\n", name);
+        show_table(df);
+    }
+}
+
+/* What the chunk reader adds up while it goes through a file. */
+typedef struct {
+    size_t chunks;
+    size_t rows;
+} ChunkCount;
+
+static df_status count_chunk(const DataFrame *chunk, size_t first_row,
+                             void *user_data)
+{
+    ChunkCount *count = user_data;
+    count->chunks++;
+    count->rows += df_nrows(chunk);
+    if (count->chunks <= 5) {
+        printf("  chunk %zu: rows %zu to %zu\n", count->chunks, first_row,
+               first_row + df_nrows(chunk) - 1);
+    } else if (count->chunks == 6) {
+        printf("  ...\n");
+    }
+    return DF_OK;
+}
+
+static void do_chunks(void)
+{
+    char path[LINE_SIZE];
+    long rows = 0;
+    if (!read_line("CSV file: ", path, sizeof path)) return;
+    if (!read_number("Rows per chunk: ", &rows) || rows == 0) {
+        printf("Please type a whole number (1 or more).\n");
+        return;
+    }
+    csv_error where;
+    csv_options opts = csv_default_options();
+    opts.error = &where;
+    ChunkCount count = {0, 0};
+    df_status st = df_read_csv_chunks(path, &opts, (size_t)rows, count_chunk,
+                                      &count);
+    printf("Read %zu rows in %zu chunks, never more than %ld rows in "
+           "memory.\n", count.rows, count.chunks, rows);
+    if (st != DF_OK) {
+        printf("Error: %s (%s)\n", df_strerror(st), where.message);
+    }
+}
+
 /* ---- main --------------------------------------------------------------- */
 
 static void print_menu(const DataFrame *df)
@@ -489,14 +690,16 @@ static void print_menu(const DataFrame *df)
     } else {
         printf("No table loaded.\n");
     }
-    printf(" 1. Load a CSV file           9. Sort rows\n");
-    printf(" 2. Load the sample table    10. Column statistics\n");
-    printf(" 3. Show the table           11. Group by and aggregate\n");
-    printf(" 4. First N rows (head)      12. Join with a CSV file\n");
-    printf(" 5. Last N rows (tail)       13. Rename a column\n");
-    printf(" 6. Rows in a range (slice)  14. Remove a column\n");
-    printf(" 7. Select columns           15. Drop rows with missing values\n");
-    printf(" 8. Filter rows              16. Save the table to CSV\n");
+    printf(" 1. Load a CSV file           11. Group by and aggregate\n");
+    printf(" 2. Load the sample table     12. Join with a CSV file\n");
+    printf(" 3. Show the table            13. Rename a column\n");
+    printf(" 4. First N rows (head)       14. Remove a column\n");
+    printf(" 5. Last N rows (tail)        15. Drop rows with missing values\n");
+    printf(" 6. Rows in a range (slice)   16. Save the table to CSV\n");
+    printf(" 7. Select columns            17. Describe number columns\n");
+    printf(" 8. Filter rows               18. Stack a CSV file under it\n");
+    printf(" 9. Sort rows                 19. Add a computed column\n");
+    printf("10. Column statistics         20. Read a CSV file in chunks\n");
     printf(" 0. Quit\n");
 }
 
@@ -506,7 +709,7 @@ int main(int argc, char **argv)
 
     /* Start with the file from the command line, or the sample table. */
     if (argc > 1) {
-        if (check(df_read_csv(argv[1], NULL, &current))) {
+        if (load_csv(argv[1], &current)) {
             printf("Loaded %s\n", argv[1]);
             print_columns(current);
         }
@@ -539,6 +742,10 @@ int main(int argc, char **argv)
             do_load_sample(&current);
             continue;
         }
+        if (choice == 20) {
+            do_chunks();        /* works on a file, not the current table */
+            continue;
+        }
         /* every other choice needs a table */
         if (current == NULL) {
             printf("Load a table first (1 or 2).\n");
@@ -560,6 +767,9 @@ int main(int argc, char **argv)
         case 14: do_remove(current); break;
         case 15: do_drop_missing(&current); break;
         case 16: do_save(current); break;
+        case 17: do_describe(current); break;
+        case 18: do_stack(&current); break;
+        case 19: do_compute(current); break;
         default: printf("Please type a number from the menu.\n"); break;
         }
     }
