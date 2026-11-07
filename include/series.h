@@ -15,6 +15,13 @@
  *     them; copy them if you need them longer.
  *   - Every function that fails leaves the Series unchanged.
  *
+ * REPEATED TEXT IS STORED ONCE
+ *   A STRING Series keeps each different text only once, with a count of
+ *   how many cells use it. A column like "dept" with 100000 cells but only
+ *   5 departments therefore holds 5 strings, not 100000. This is invisible
+ *   to the caller: every function above behaves exactly as if each cell
+ *   had its own copy. series_distinct_strings() shows how many are stored.
+ *
  * Owner: Person A
  */
 #ifndef DF_SERIES_H
@@ -27,7 +34,10 @@
 typedef enum {
     DTYPE_INT,    /* int64_t */
     DTYPE_FLOAT,  /* double  */
-    DTYPE_STRING  /* char *  */
+    DTYPE_STRING, /* char *  */
+    DTYPE_BOOL,   /* true / false, stored as one byte                    */
+    DTYPE_DATE    /* a calendar day, stored as int64_t days since
+                     1970-01-01 (see df_date.h to convert)               */
 } df_dtype;
 
 typedef struct Series Series;
@@ -62,7 +72,14 @@ df_status series_take(const Series *s, const size_t *indices, size_t n,
 df_status series_append_int(Series *s, int64_t v);        /* DTYPE_INT only    */
 df_status series_append_float(Series *s, double v);       /* DTYPE_FLOAT only  */
 df_status series_append_string(Series *s, const char *v); /* DTYPE_STRING only; copies v */
+df_status series_append_bool(Series *s, int v);           /* DTYPE_BOOL; any non-zero v is true */
+df_status series_append_date(Series *s, int64_t days);    /* DTYPE_DATE only   */
 df_status series_append_missing(Series *s);               /* any dtype         */
+
+/* Appends a copy of cell i of src (a value or a missing cell) to dst.
+ * Both must have the same dtype (DF_ERR_TYPE_MISMATCH otherwise);
+ * DF_ERR_INDEX_OUT_OF_RANGE if i >= series_len(src). */
+df_status series_append_from(Series *dst, const Series *src, size_t i);
 
 /* ---- inspection --------------------------------------------------------- */
 
@@ -74,12 +91,18 @@ size_t      series_count_missing(const Series *s);
 /* Returns 1 if cell `i` is missing, 0 if present or if i is out of range. */
 int series_is_missing(const Series *s, size_t i);
 
+/* For a STRING Series: how many different texts are stored (each one only
+ * once, see the top of this file). 0 for other dtypes. */
+size_t series_distinct_strings(const Series *s);
+
 /* Typed reads. Fail with DF_ERR_TYPE_MISMATCH on the wrong dtype,
  * DF_ERR_INDEX_OUT_OF_RANGE on a bad index, DF_ERR_MISSING_VALUE on a missing
  * cell. On success the value is written to *out. */
 df_status series_get_int(const Series *s, size_t i, int64_t *out);
 df_status series_get_float(const Series *s, size_t i, double *out);
 df_status series_get_string(const Series *s, size_t i, const char **out);
+df_status series_get_bool(const Series *s, size_t i, int *out);     /* 0 or 1 */
+df_status series_get_date(const Series *s, size_t i, int64_t *out);
 
 /* ---- modification ------------------------------------------------------- */
 
@@ -93,11 +116,15 @@ df_status series_rename(Series *s, const char *new_name);
 df_status series_set_int(Series *s, size_t i, int64_t v);
 df_status series_set_float(Series *s, size_t i, double v);
 df_status series_set_string(Series *s, size_t i, const char *v);
+df_status series_set_bool(Series *s, size_t i, int v);
+df_status series_set_date(Series *s, size_t i, int64_t days);
 df_status series_set_missing(Series *s, size_t i);
 
 /* Replace every missing cell with a value (type must match the dtype). */
 df_status series_fill_missing_int(Series *s, int64_t v);
 df_status series_fill_missing_float(Series *s, double v);
 df_status series_fill_missing_string(Series *s, const char *v);
+df_status series_fill_missing_bool(Series *s, int v);
+df_status series_fill_missing_date(Series *s, int64_t days);
 
 #endif /* DF_SERIES_H */

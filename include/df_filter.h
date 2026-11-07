@@ -5,6 +5,7 @@
  *     df_filter_number(df, "age", DF_OP_GT, 30, &out);       age > 30
  *     df_filter_string(df, "city", DF_OP_EQ, "Pune", &out);  city == "Pune"
  *     df_filter_missing(df, "score", 1, &out);               score is missing
+ *     df_filter_date(df, "joined", DF_OP_GE, days, &out);    joined >= a date
  *
  * To combine conditions with AND, filter the result again. For anything
  * else (OR, conditions on two columns, ...) write your own function and use
@@ -27,6 +28,7 @@
 #define DF_FILTER_H
 
 #include <stddef.h>
+#include <stdint.h>
 #include "df_error.h"
 #include "dataframe.h"
 
@@ -41,7 +43,8 @@ typedef enum {
 
 /* Compares a number column (DTYPE_INT or DTYPE_FLOAT) with `value`.
  * INT cells are converted to double before comparing (exact for integers
- * up to 2^53).
+ * up to 2^53). A DTYPE_BOOL column also works: False is 0 and True is 1,
+ * so DF_OP_EQ with 1 keeps the True rows.
  * Errors: DF_ERR_NOT_FOUND (no such column), DF_ERR_TYPE_MISMATCH (string
  * column), DF_ERR_INVALID_ARG (bad op). */
 df_status df_filter_number(const DataFrame *df, const char *column,
@@ -55,6 +58,13 @@ df_status df_filter_number(const DataFrame *df, const char *column,
 df_status df_filter_string(const DataFrame *df, const char *column,
                            df_compare_op op, const char *value,
                            DataFrame **out);
+
+/* Compares a DTYPE_DATE column with a day number (use df_date_parse() or
+ * df_date_from_ymd() from df_date.h to get one). Earlier dates are smaller.
+ * Errors: DF_ERR_NOT_FOUND, DF_ERR_TYPE_MISMATCH (not a date column),
+ * DF_ERR_INVALID_ARG (bad op). */
+df_status df_filter_date(const DataFrame *df, const char *column,
+                         df_compare_op op, int64_t days, DataFrame **out);
 
 /* keep_missing != 0: keep rows where `column` is missing.
  * keep_missing == 0: keep rows where `column` is NOT missing.

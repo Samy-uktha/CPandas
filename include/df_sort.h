@@ -6,7 +6,8 @@
  *     equal is the second sort column used, and so on.
  *   - Each sort column can be ascending or descending on its own.
  *   - Numbers are compared by value, strings with strcmp() (case-sensitive
- *     alphabetical order).
+ *     alphabetical order), dates from earliest to latest, and False comes
+ *     before True.
  *   - Missing cells always go LAST, for ascending and descending (same as
  *     pandas' default na_position="last").
  *   - The sort is STABLE: rows that are equal in every sort column keep the

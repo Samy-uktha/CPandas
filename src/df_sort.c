@@ -60,6 +60,24 @@ int series_compare_cells(const Series *a, size_t i, const Series *b, size_t j)
         return 0;
     }
 
+    /* Dates are day numbers, so an earlier date is a smaller number. */
+    if (series_dtype(a) == DTYPE_DATE) {
+        int64_t x = 0, y = 0;
+        series_get_date(a, i, &x);
+        series_get_date(b, j, &y);
+        if (x < y) return -1;
+        if (x > y) return 1;
+        return 0;
+    }
+
+    /* False (0) comes before True (1). */
+    if (series_dtype(a) == DTYPE_BOOL) {
+        int x = 0, y = 0;
+        series_get_bool(a, i, &x);
+        series_get_bool(b, j, &y);
+        return x - y;
+    }
+
     if (series_dtype(a) == DTYPE_FLOAT) {
         double x = 0.0, y = 0.0;
         series_get_float(a, i, &x);

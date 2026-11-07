@@ -92,7 +92,7 @@ df_status df_filter_number(const DataFrame *df, const char *column,
         return st;
     }
     df_dtype type = series_dtype(col);
-    if (type != DTYPE_INT && type != DTYPE_FLOAT) {
+    if (type != DTYPE_INT && type != DTYPE_FLOAT && type != DTYPE_BOOL) {
         return DF_ERR_TYPE_MISMATCH;
     }
 
@@ -115,6 +115,10 @@ df_status df_filter_number(const DataFrame *df, const char *column,
             int64_t iv = 0;
             series_get_int(col, r, &iv);
             cell = (double)iv;
+        } else if (type == DTYPE_BOOL) {
+            int bv = 0;
+            series_get_bool(col, r, &bv);
+            cell = (double)bv;
         } else {
             series_get_float(col, r, &cell);
         }
@@ -171,6 +175,60 @@ df_status df_filter_string(const DataFrame *df, const char *column,
         /* strcmp can return any negative/positive number, op_matches only
            looks at the sign so that is fine. */
         if (op_matches(op, strcmp(cell, value))) {
+            rows[count] = r;
+            count++;
+        }
+    }
+
+    return finish_filter(df, rows, count, out);
+}
+
+df_status df_filter_date(const DataFrame *df, const char *column,
+                         df_compare_op op, int64_t days, DataFrame **out)
+{
+    if (out == NULL) {
+        return DF_ERR_NULL_ARG;
+    }
+    *out = NULL;
+    if (df == NULL || column == NULL) {
+        return DF_ERR_NULL_ARG;
+    }
+    if (!valid_op(op)) {
+        return DF_ERR_INVALID_ARG;
+    }
+
+    const Series *col = NULL;
+    df_status st = df_get_column(df, column, &col);
+    if (st != DF_OK) {
+        return st;
+    }
+    if (series_dtype(col) != DTYPE_DATE) {
+        return DF_ERR_TYPE_MISMATCH;
+    }
+
+    size_t *rows = NULL;
+    st = make_row_list(df, &rows);
+    if (st != DF_OK) {
+        return st;
+    }
+
+    size_t count = 0;
+    size_t nrows = df_nrows(df);
+    for (size_t r = 0; r < nrows; r++) {
+        if (series_is_missing(col, r)) {
+            continue;   /* missing never matches */
+        }
+
+        int64_t cell = 0;
+        series_get_date(col, r, &cell);
+        int diff = 0;
+        if (cell < days) {
+            diff = -1;
+        } else if (cell > days) {
+            diff = 1;
+        }
+
+        if (op_matches(op, diff)) {
             rows[count] = r;
             count++;
         }

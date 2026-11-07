@@ -12,6 +12,7 @@
  *   - a frame with 0 columns has 0 rows.
  */
 #include "dataframe.h"
+#include "df_date.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -461,8 +462,9 @@ df_status df_drop_missing_rows(const DataFrame *df, DataFrame **out)
 
 /* ---- printing ----------------------------------------------------------- */
 
-/* Writes cell `row` of `col` as text into buf, e.g. "42", "3.5", "Asha" or
-   "NA". Text longer than PRINT_MAX_WIDTH is cut and ends with "...". */
+/* Writes cell `row` of `col` as text into buf, e.g. "42", "3.5", "Asha",
+   "True", "2024-03-15" or "NA". Text longer than PRINT_MAX_WIDTH is cut and
+   ends with "...". */
 static void format_cell(const Series *col, size_t row, char *buf, size_t size)
 {
     if (series_is_missing(col, row)) {
@@ -478,6 +480,14 @@ static void format_cell(const Series *col, size_t row, char *buf, size_t size)
         double v = 0.0;
         series_get_float(col, row, &v);
         snprintf(buf, size, "%g", v);
+    } else if (series_dtype(col) == DTYPE_BOOL) {
+        int v = 0;
+        series_get_bool(col, row, &v);
+        snprintf(buf, size, "%s", v ? "True" : "False");
+    } else if (series_dtype(col) == DTYPE_DATE) {
+        int64_t v = 0;
+        series_get_date(col, row, &v);
+        df_date_format(v, buf, size);
     } else {
         const char *v = NULL;
         series_get_string(col, row, &v);
