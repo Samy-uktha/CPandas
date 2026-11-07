@@ -1,0 +1,11 @@
+# Everything that `make` produces goes into build/
+build/
+
+# Old compiled test program that used to be committed at the top level
+/test
+
+# Windows builds and editor files
+*.exe
+*.o
+*.d
+.vscode/
