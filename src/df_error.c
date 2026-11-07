@@ -15,6 +15,7 @@ const char *df_strerror(df_status s)
     case DF_ERR_MISSING_VALUE:     return "cell is missing";
     case DF_ERR_IO:                return "I/O error";
     case DF_ERR_PARSE:             return "parse error";
+    case DF_ERR_OVERFLOW:          return "integer overflow";
     }
     return "unknown error";
 }

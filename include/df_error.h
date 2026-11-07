@@ -23,7 +23,8 @@ typedef enum {
     DF_ERR_LENGTH_MISMATCH,   /* column length differs from the frame's row count*/
     DF_ERR_MISSING_VALUE,     /* tried to read a value from a missing cell       */
     DF_ERR_IO,                /* fopen/fread/fwrite failed                       */
-    DF_ERR_PARSE              /* malformed CSV input                             */
+    DF_ERR_PARSE,             /* malformed CSV input                             */
+    DF_ERR_OVERFLOW           /* an integer result does not fit in int64_t       */
 } df_status;
 
 /* Returns a static, human-readable string for a status code.
