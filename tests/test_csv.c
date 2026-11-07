@@ -3,6 +3,7 @@
 #include <stdlib.h>
 
 #include "csv.h"
+#include "df_date.h"
 #include "test_helpers.h"
 
 #define TMP_FILE "build/test_csv_tmp.csv"
@@ -61,6 +62,16 @@ static int frames_equal(const DataFrame *a, const DataFrame *b)
                 series_get_float(x, r, &u);
                 series_get_float(y, r, &v);
                 if (u != v) return 0;   /* must round-trip exactly */
+            } else if (series_dtype(x) == DTYPE_BOOL) {
+                int u = 0, v = 0;
+                series_get_bool(x, r, &u);
+                series_get_bool(y, r, &v);
+                if (u != v) return 0;
+            } else if (series_dtype(x) == DTYPE_DATE) {
+                int64_t u = 0, v = 0;
+                series_get_date(x, r, &u);
+                series_get_date(y, r, &v);
+                if (u != v) return 0;
             } else {
                 const char *u = NULL, *v = NULL;
                 series_get_string(x, r, &u);
@@ -395,6 +406,275 @@ static void test_large(void)
     df_free(df);
 }
 
+/* ---- booleans and dates ------------------------------------------------- */
+
+static void test_bool_and_date_columns(void)
+{
+    DataFrame *df = read_text(
+        "flag,mixed,when,notdate,num01\n"
+        "True,true,2024-02-29,2024/02/29,1\n"
+        "FALSE,yes,1999-12-31,2024-02-29,0\n"
+        ",False,,2023-02-29,1\n");
+    CHECK(type_of(df, "flag") == DTYPE_BOOL);
+    CHECK(type_of(df, "mixed") == DTYPE_STRING);    /* "yes" is text */
+    CHECK(type_of(df, "when") == DTYPE_DATE);
+    CHECK(type_of(df, "notdate") == DTYPE_STRING);  /* "/" and 2023-02-29 */
+    CHECK(type_of(df, "num01") == DTYPE_INT);       /* 1 and 0 stay INT */
+
+    const Series *s = NULL;
+    int b = -1;
+    df_get_column(df, "flag", &s);
+    CHECK(series_get_bool(s, 0, &b) == DF_OK && b == 1);
+    CHECK(series_get_bool(s, 1, &b) == DF_OK && b == 0);
+    CHECK(series_is_missing(s, 2));
+
+    int64_t d = 0, expect = 0;
+    df_get_column(df, "when", &s);
+    df_date_from_ymd(2024, 2, 29, &expect);
+    CHECK(series_get_date(s, 0, &d) == DF_OK && d == expect);
+    CHECK(series_is_missing(s, 2));
+
+    /* written as True/False and YYYY-MM-DD, and read back the same */
+    CHECK(df_write_csv(df, TMP_FILE, NULL) == DF_OK);
+    DataFrame *back = NULL;
+    CHECK(df_read_csv(TMP_FILE, NULL, &back) == DF_OK);
+    CHECK(frames_equal(df, back));
+    df_free(back);
+
+    FILE *f = fopen(TMP_FILE, "rb");
+    char text[512] = {0};
+    if (f != NULL) {
+        size_t got = fread(text, 1, sizeof text - 1, f);
+        text[got] = '\0';
+        fclose(f);
+    }
+    CHECK(strstr(text, "True,true,2024-02-29,2024/02/29,1\n") != NULL);
+    CHECK(strstr(text, "False,yes,1999-12-31") != NULL);
+    remove(TMP_FILE);
+    df_free(df);
+}
+
+/* ---- error reports with line numbers ------------------------------------ */
+
+/* Reads text, expecting status `want`, and checks the reported line and
+   field. Returns the message (valid until the next call). */
+static const char *read_error(const char *text, df_status want, size_t line,
+                              size_t field)
+{
+    static csv_error err;
+    csv_options opts = csv_default_options();
+    opts.error = &err;
+    DataFrame *df = NULL;
+    CHECK(df_read_csv_string(text, &opts, &df) == want);
+    CHECK(df == NULL);
+    CHECK(err.line == line);
+    CHECK(err.field == field);
+    CHECK(err.message[0] != '\0');
+    df_free(df);
+    return err.message;
+}
+
+static void test_error_lines(void)
+{
+    const char *msg = NULL;
+
+    msg = read_error("a,b\n1,2\n3,4\n5\n", DF_ERR_PARSE, 4, 0);
+    CHECK(strstr(msg, "expected 2 fields but found 1") != NULL);
+
+    /* blank lines, a quoted newline and \r\n line endings all count */
+    msg = read_error("a,b\r\n\r\n1,\"x\ny\"\r\n2,3,4\r\n", DF_ERR_PARSE, 5, 0);
+    CHECK(strstr(msg, "found 3") != NULL);
+    /* a lone \r ends a line too */
+    read_error("a\r1\r2,2\r", DF_ERR_PARSE, 3, 0);
+
+    msg = read_error("a,b\n1,2\n3,\"never closed\n4,5\n", DF_ERR_PARSE, 3, 2);
+    CHECK(strstr(msg, "never closed") != NULL);
+
+    msg = read_error("a,b\n1,\"ab\"c\n", DF_ERR_PARSE, 2, 2);
+    CHECK(strstr(msg, "closing quote") != NULL);
+
+    msg = read_error("\n\nx,y,x\n1,2,3\n", DF_ERR_DUPLICATE_NAME, 3, 3);
+    CHECK(strstr(msg, "\"x\"") != NULL);
+
+    /* options and files */
+    csv_error err;
+    csv_options opts = csv_default_options();
+    opts.error = &err;
+    opts.delimiter = '"';
+    DataFrame *df = NULL;
+    CHECK(df_read_csv_string("a\n", &opts, &df) == DF_ERR_INVALID_ARG);
+    CHECK(err.line == 0 && err.message[0] != '\0');
+    opts.delimiter = ',';
+    CHECK(df_read_csv("no_such_file_here.csv", &opts, &df) == DF_ERR_IO);
+    CHECK(err.line == 0 && strstr(err.message, "no_such_file_here") != NULL);
+
+    /* success clears an old report */
+    CHECK(df_read_csv_string("a\n1\n", &opts, &df) == DF_OK);
+    CHECK(err.message[0] == '\0' && err.line == 0);
+    df_free(df);
+
+    /* the '\0' byte in a file: reported on its line */
+    FILE *f = fopen(TMP_FILE, "wb");
+    if (f != NULL) {
+        fwrite("a\n1\n2\0\n", 1, 7, f);
+        fclose(f);
+        CHECK(df_read_csv(TMP_FILE, &opts, &df) == DF_ERR_PARSE);
+        CHECK(err.line == 3);
+        remove(TMP_FILE);
+    }
+}
+
+/* ---- reading in chunks -------------------------------------------------- */
+
+typedef struct {
+    size_t  calls;
+    size_t  rows;
+    int64_t id_sum;
+    size_t  first_rows[16];
+    size_t  stop_after;     /* 0 = never stop */
+    int     types_ok;
+} ChunkTotals;
+
+static df_status add_chunk(const DataFrame *chunk, size_t first_row,
+                           void *user_data)
+{
+    ChunkTotals *t = user_data;
+    if (t->calls < 16) {
+        t->first_rows[t->calls] = first_row;
+    }
+    t->calls++;
+    t->rows += df_nrows(chunk);
+    const Series *id = NULL;
+    if (df_get_column(chunk, "id", &id) != DF_OK ||
+        series_dtype(id) != DTYPE_INT) {
+        t->types_ok = 0;
+        return DF_OK;
+    }
+    for (size_t r = 0; r < series_len(id); r++) {
+        int64_t v = 0;
+        series_get_int(id, r, &v);
+        t->id_sum += v;
+    }
+    if (t->stop_after > 0 && t->calls == t->stop_after) {
+        return DF_ERR_INVALID_ARG;  /* any status other than DF_OK stops */
+    }
+    return DF_OK;
+}
+
+static int write_text_file(const char *text)
+{
+    FILE *f = fopen(TMP_FILE, "wb");
+    if (f == NULL) {
+        return 0;
+    }
+    fputs(text, f);
+    fclose(f);
+    return 1;
+}
+
+static void test_chunks(void)
+{
+    /* 1000 rows, ids 0..999 */
+    enum { N = 1000 };
+    char *text = malloc((size_t)N * 24 + 32);
+    CHECK(text != NULL);
+    if (text == NULL) return;
+    size_t len = (size_t)sprintf(text, "\xEF\xBB\xBFid,name\n");
+    for (int i = 0; i < N; i++) {
+        len += (size_t)sprintf(text + len, "%d,n%d\n", i, i % 7);
+    }
+    CHECK(write_text_file(text));
+    free(text);
+
+    ChunkTotals t = {0, 0, 0, {0}, 0, 1};
+    CHECK(df_read_csv_chunks(TMP_FILE, NULL, 300, add_chunk, &t) == DF_OK);
+    CHECK(t.calls == 4);                    /* 300 + 300 + 300 + 100 */
+    CHECK(t.rows == N);
+    CHECK(t.id_sum == (int64_t)N * (N - 1) / 2);
+    CHECK(t.first_rows[0] == 0 && t.first_rows[1] == 300 &&
+          t.first_rows[3] == 900);
+    CHECK(t.types_ok);
+
+    /* one row at a time, and one chunk for everything */
+    ChunkTotals one = {0, 0, 0, {0}, 0, 1};
+    CHECK(df_read_csv_chunks(TMP_FILE, NULL, 1, add_chunk, &one) == DF_OK);
+    CHECK(one.calls == N && one.rows == N);
+    ChunkTotals all = {0, 0, 0, {0}, 0, 1};
+    CHECK(df_read_csv_chunks(TMP_FILE, NULL, 5000, add_chunk, &all) == DF_OK);
+    CHECK(all.calls == 1 && all.id_sum == t.id_sum);
+
+    /* the handler can stop early; its status is returned */
+    ChunkTotals stop = {0, 0, 0, {0}, 2, 1};
+    CHECK(df_read_csv_chunks(TMP_FILE, NULL, 100, add_chunk, &stop) ==
+          DF_ERR_INVALID_ARG);
+    CHECK(stop.calls == 2 && stop.rows == 200);
+
+    /* bad arguments */
+    CHECK(df_read_csv_chunks(TMP_FILE, NULL, 0, add_chunk, &t) ==
+          DF_ERR_INVALID_ARG);
+    CHECK(df_read_csv_chunks(TMP_FILE, NULL, 10, NULL, &t) == DF_ERR_NULL_ARG);
+    CHECK(df_read_csv_chunks(NULL, NULL, 10, add_chunk, &t) == DF_ERR_NULL_ARG);
+    CHECK(df_read_csv_chunks("no_such_file_here.csv", NULL, 10, add_chunk,
+                             &t) == DF_ERR_IO);
+
+    /* only a header: the handler is never called */
+    CHECK(write_text_file("id,name\n"));
+    ChunkTotals none = {0, 0, 0, {0}, 0, 1};
+    CHECK(df_read_csv_chunks(TMP_FILE, NULL, 10, add_chunk, &none) == DF_OK);
+    CHECK(none.calls == 0);
+
+    /* a broken row part-way: earlier chunks were handled, then the error
+       comes with its line number */
+    CHECK(write_text_file("id,name\n1,a\n2,b\n3,c\n4\n5,e\n"));
+    csv_error err;
+    csv_options opts = csv_default_options();
+    opts.error = &err;
+    ChunkTotals part = {0, 0, 0, {0}, 0, 1};
+    CHECK(df_read_csv_chunks(TMP_FILE, &opts, 2, add_chunk, &part) ==
+          DF_ERR_PARSE);
+    CHECK(part.calls == 1 && part.rows == 2);
+    CHECK(err.line == 5);
+
+    /* no header: columns col0, col1 and every row is data */
+    CHECK(write_text_file("1,a\n2,b\n3,c\n"));
+    opts = csv_default_options();
+    opts.has_header = 0;
+    ChunkTotals headless = {0, 0, 0, {0}, 0, 1};
+    CHECK(df_read_csv_chunks(TMP_FILE, &opts, 2, add_chunk, &headless) ==
+          DF_OK);
+    CHECK(headless.rows == 3 && headless.types_ok == 0);  /* no "id" */
+    remove(TMP_FILE);
+}
+
+/* A file bigger than the 4 KB read buffer, with a quoted field that spans
+   the buffer boundary, reads the same as the same text from memory. */
+static void test_file_bigger_than_buffer(void)
+{
+    enum { N = 3000 };
+    char *text = malloc((size_t)N * 64 + 64);
+    CHECK(text != NULL);
+    if (text == NULL) return;
+    size_t len = (size_t)sprintf(text, "id,note\r\n");
+    for (int i = 0; i < N; i++) {
+        len += (size_t)sprintf(text + len, "%d,\"line %d, \"\"quoted\"\"\n"
+                               "second part\"\r\n", i, i);
+    }
+    CHECK(write_text_file(text));
+
+    DataFrame *from_text = NULL;
+    DataFrame *from_file = NULL;
+    CHECK(df_read_csv_string(text, NULL, &from_text) == DF_OK);
+    CHECK(df_read_csv(TMP_FILE, NULL, &from_file) == DF_OK);
+    CHECK(df_nrows(from_file) == N);
+    CHECK(frames_equal(from_text, from_file));
+    CHECK(same_string(cell_string(from_file, "note", N - 1),
+                      "line 2999, \"quoted\"\nsecond part"));
+    free(text);
+    df_free(from_text);
+    df_free(from_file);
+    remove(TMP_FILE);
+}
+
 int main(void)
 {
     test_basic_read();
@@ -409,5 +689,9 @@ int main(void)
     test_write_and_read_back();
     test_write_errors();
     test_large();
+    test_bool_and_date_columns();
+    test_error_lines();
+    test_chunks();
+    test_file_bigger_than_buffer();
     return finish_tests();
 }
