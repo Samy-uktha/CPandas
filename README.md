@@ -329,6 +329,15 @@ with two tabs:
   - a bar chart of the strongest signals;
   - the raw, cleaned or predicted data as a table.
 
+**Zoom:** use the **−** / **100%** / **+** buttons in the title bar,
+**Ctrl + =** / **Ctrl + −** / **Ctrl + 0**, or **Ctrl + mouse wheel**. All
+text, the tables and the chart scale together, from 60% to 250%.
+
+On WSL the terminal may show `libEGL` / `MESA` warnings when the window
+opens. They are harmless: GTK could not use the graphics card through WSL
+and draws in software instead. `GSK_RENDERER=cairo make gui` skips that
+attempt and the warnings.
+
 The GUI calls CPandas directly for every table it shows. GTK only draws.
 It is built without the sanitizers, because GTK's own memory at start-up
 would flood the leak report.

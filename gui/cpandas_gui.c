@@ -14,6 +14,9 @@
  *                confusion matrix, the strongest features, and the raw,
  *                cleaned and predicted data as tables.
  *
+ * Zoom: the - / 100% / + buttons in the title bar, Ctrl + = / Ctrl + - /
+ * Ctrl + 0, or Ctrl + mouse wheel. Every text in the window scales.
+ *
  * Everything the window shows about a table comes from CPandas: tables are
  * loaded with df_read_csv, changed with the query functions and drawn cell
  * by cell with the series_get_* functions. GTK only draws.
@@ -30,6 +33,9 @@
 #include "cpandas.h"
 
 #define HISTORY_SIZE 30     /* how many steps Undo can go back   */
+#define ZOOM_MIN 60         /* text size limits, in percent      */
+#define ZOOM_MAX 250
+#define ZOOM_STEP 10
 #define TEXT_SIZE 256
 
 /* ---- a table widget that shows a DataFrame ------------------------------ */
@@ -258,6 +264,12 @@ typedef struct {
     char       feature_names[8][64];
     double     feature_weights[8];
     int        nfeatures;
+
+    /* zoom */
+    int             zoom;           /* text size in percent, 100 = normal */
+    double          scroll_sum;     /* Ctrl + wheel movement not used yet */
+    GtkCssProvider *zoom_css;
+    GtkWidget      *zoom_label;
 } App;
 
 /* ---- status line -------------------------------------------------------- */
@@ -1325,12 +1337,13 @@ static void draw_features(GtkDrawingArea *area, cairo_t *cr, int width,
         biggest = fmax(biggest, fabs(app->feature_weights[k]));
     }
     double row_height = (double)height / app->nfeatures;
-    double name_width = 170.0;
+    double scale = app->zoom / 100.0;
+    double name_width = 170.0 * scale;
     double middle = name_width + (width - name_width - 60) / 2.0;
     double half = (width - name_width - 60) / 2.0;
     cairo_select_font_face(cr, "Sans", CAIRO_FONT_SLANT_NORMAL,
                            CAIRO_FONT_WEIGHT_NORMAL);
-    cairo_set_font_size(cr, 12.5);
+    cairo_set_font_size(cr, 12.5 * scale);
 
     for (int k = 0; k < app->nfeatures; k++) {
         double w = app->feature_weights[k];
@@ -1352,7 +1365,7 @@ static void draw_features(GtkDrawingArea *area, cairo_t *cr, int width,
         cairo_show_text(cr, app->feature_names[k]);
         char number[32];
         snprintf(number, sizeof number, "%+.2f", w);
-        cairo_move_to(cr, w >= 0 ? middle + bar + 6 : middle - bar - 42,
+        cairo_move_to(cr, w >= 0 ? middle + bar + 6 : middle - bar - 42 * scale,
                       y + row_height * 0.62);
         cairo_show_text(cr, number);
     }
@@ -1497,6 +1510,142 @@ static GtkWidget *build_ml_tab(App *app)
     return page;
 }
 
+/* ---- zoom --------------------------------------------------------------- */
+
+/* All text in the window inherits the window's font size, so one CSS rule
+   scales everything: table cells, labels, buttons, the dropdown lists. Only
+   the bar chart is drawn by hand, so it reads app->zoom itself. */
+static void apply_zoom(App *app)
+{
+    char css[96];
+    snprintf(css, sizeof css, "window { font-size: %d%%; }", app->zoom);
+    gtk_css_provider_load_from_string(app->zoom_css, css);
+
+    char text[16];
+    snprintf(text, sizeof text, "%d%%", app->zoom);
+    gtk_button_set_label(GTK_BUTTON(app->zoom_label), text);
+    gtk_drawing_area_set_content_height(GTK_DRAWING_AREA(app->ml_chart),
+                                        200 * app->zoom / 100);
+    gtk_widget_queue_draw(app->ml_chart);
+}
+
+static void change_zoom(App *app, int step)
+{
+    int zoom = (step == 0) ? 100 : app->zoom + step;
+    if (zoom < ZOOM_MIN) {
+        zoom = ZOOM_MIN;
+    }
+    if (zoom > ZOOM_MAX) {
+        zoom = ZOOM_MAX;
+    }
+    if (zoom != app->zoom) {
+        app->zoom = zoom;
+        apply_zoom(app);
+    }
+}
+
+static void on_zoom_in(GSimpleAction *a, GVariant *v, gpointer app)
+{
+    (void)a;
+    (void)v;
+    change_zoom(app, ZOOM_STEP);
+}
+
+static void on_zoom_out(GSimpleAction *a, GVariant *v, gpointer app)
+{
+    (void)a;
+    (void)v;
+    change_zoom(app, -ZOOM_STEP);
+}
+
+static void on_zoom_reset(GSimpleAction *a, GVariant *v, gpointer app)
+{
+    (void)a;
+    (void)v;
+    change_zoom(app, 0);
+}
+
+/* Ctrl + mouse wheel. The controller sees the wheel before the tables do
+   (capture phase), and only takes it when Ctrl is held; otherwise the
+   wheel scrolls as usual. A touchpad sends many small movements, so they
+   are added up until they make one whole step. */
+static gboolean on_scroll(GtkEventControllerScroll *controller, double dx,
+                          double dy, gpointer user_data)
+{
+    (void)dx;
+    App *app = user_data;
+    GdkModifierType state = gtk_event_controller_get_current_event_state(
+        GTK_EVENT_CONTROLLER(controller));
+    if ((state & GDK_CONTROL_MASK) == 0) {
+        return FALSE;
+    }
+    app->scroll_sum += dy;
+    while (app->scroll_sum <= -1.0) {
+        change_zoom(app, ZOOM_STEP);        /* wheel up: bigger */
+        app->scroll_sum += 1.0;
+    }
+    while (app->scroll_sum >= 1.0) {
+        change_zoom(app, -ZOOM_STEP);
+        app->scroll_sum -= 1.0;
+    }
+    return TRUE;
+}
+
+/* The zoom actions, their keys, the title-bar buttons and Ctrl + wheel. */
+static void add_zoom_controls(App *app, GtkApplication *application,
+                              GtkWidget *header)
+{
+    const char *names[3] = {"zoom-in", "zoom-out", "zoom-reset"};
+    GCallback callbacks[3] = {G_CALLBACK(on_zoom_in), G_CALLBACK(on_zoom_out),
+                              G_CALLBACK(on_zoom_reset)};
+    for (int k = 0; k < 3; k++) {
+        GSimpleAction *action = g_simple_action_new(names[k], NULL);
+        g_signal_connect(action, "activate", callbacks[k], app);
+        g_action_map_add_action(G_ACTION_MAP(app->window), G_ACTION(action));
+        g_object_unref(action);
+    }
+    const char *in_keys[] = {"<Control>plus", "<Control>equal",
+                             "<Control>KP_Add", NULL};
+    const char *out_keys[] = {"<Control>minus", "<Control>KP_Subtract", NULL};
+    const char *reset_keys[] = {"<Control>0", "<Control>KP_0", NULL};
+    gtk_application_set_accels_for_action(application, "win.zoom-in",
+                                          in_keys);
+    gtk_application_set_accels_for_action(application, "win.zoom-out",
+                                          out_keys);
+    gtk_application_set_accels_for_action(application, "win.zoom-reset",
+                                          reset_keys);
+
+    GtkWidget *box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
+    gtk_widget_add_css_class(box, "linked");
+    GtkWidget *out = gtk_button_new_with_label("−");
+    gtk_actionable_set_action_name(GTK_ACTIONABLE(out), "win.zoom-out");
+    gtk_widget_set_tooltip_text(out, "Smaller text (Ctrl + −)");
+    app->zoom_label = gtk_button_new_with_label("100%");
+    gtk_actionable_set_action_name(GTK_ACTIONABLE(app->zoom_label),
+                                   "win.zoom-reset");
+    gtk_widget_set_tooltip_text(app->zoom_label, "Normal size (Ctrl + 0)");
+    GtkWidget *in = gtk_button_new_with_label("+");
+    gtk_actionable_set_action_name(GTK_ACTIONABLE(in), "win.zoom-in");
+    gtk_widget_set_tooltip_text(in, "Bigger text (Ctrl + =)");
+    gtk_box_append(GTK_BOX(box), out);
+    gtk_box_append(GTK_BOX(box), app->zoom_label);
+    gtk_box_append(GTK_BOX(box), in);
+    gtk_header_bar_pack_end(GTK_HEADER_BAR(header), box);
+
+    GtkEventController *wheel = gtk_event_controller_scroll_new(
+        GTK_EVENT_CONTROLLER_SCROLL_VERTICAL);
+    gtk_event_controller_set_propagation_phase(wheel, GTK_PHASE_CAPTURE);
+    g_signal_connect(wheel, "scroll", G_CALLBACK(on_scroll), app);
+    gtk_widget_add_controller(GTK_WIDGET(app->window), wheel);
+
+    /* One step above the main style, so its font size wins. */
+    app->zoom_css = gtk_css_provider_new();
+    gtk_style_context_add_provider_for_display(
+        gdk_display_get_default(), GTK_STYLE_PROVIDER(app->zoom_css),
+        GTK_STYLE_PROVIDER_PRIORITY_APPLICATION + 1);
+    apply_zoom(app);
+}
+
 /* ---- window, style, start and end -------------------------------------- */
 
 static const char *STYLE =
@@ -1537,6 +1686,7 @@ static void on_shutdown(GApplication *application, gpointer user_data)
     df_free(app->ml_frame);
     g_clear_object(&app->columns);
     g_clear_object(&app->columns_or_none);
+    g_clear_object(&app->zoom_css);
     g_free(app);
 }
 
@@ -1567,6 +1717,7 @@ static void on_activate(GtkApplication *application, gpointer user_data)
     gtk_header_bar_set_title_widget(GTK_HEADER_BAR(header), switcher);
     gtk_window_set_titlebar(app->window, header);
     gtk_window_set_child(app->window, stack);
+    add_zoom_controls(app, application, header);
 
     /* Start with the employees example, or the sample if it is not here. */
     const char *start = "examples/data/employees.csv";
@@ -1590,6 +1741,7 @@ static void on_activate(GtkApplication *application, gpointer user_data)
 int main(int argc, char **argv)
 {
     App *app = g_new0(App, 1);
+    app->zoom = 100;
     app->columns = gtk_string_list_new(NULL);
     app->columns_or_none = gtk_string_list_new(NULL);
 
