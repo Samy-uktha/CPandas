@@ -9,7 +9,7 @@ TESTS := $(patsubst tests/test_%.c,build/test_%,$(wildcard tests/test_*.c))
 LIB  := build/libcpandas.a
 EXAMPLES := build/demo build/basic
 
-.PHONY: all test clean demo examples bench ml
+.PHONY: all test clean demo examples bench ml gui
 
 # `make` builds the library and both example programs.
 all: $(LIB) $(EXAMPLES)
@@ -51,6 +51,18 @@ build/ml_preprocess: ml/preprocess.c $(OBJ) | build
 
 ml: build/ml_preprocess
 	sh ml/run.sh
+
+# The desktop GUI (gui/cpandas_gui.c), written in C with GTK 4. Needs, once:
+#     sudo apt install libgtk-4-dev pkg-config
+# Built from the sources without the sanitizers (GTK's own start-up
+# allocations would flood the leak report). `make gui` builds and opens it.
+GUI_CFLAGS := -std=c11 -Wall -Wextra -O2 -Iinclude
+
+build/cpandas_gui: gui/cpandas_gui.c $(SRC) $(wildcard include/*.h src/*.h) | build
+	$(CC) $(GUI_CFLAGS) $$(pkg-config --cflags gtk4) $(filter %.c,$^) -o $@ $$(pkg-config --libs gtk4) $(LDLIBS)
+
+gui: build/cpandas_gui
+	./build/cpandas_gui
 
 examples: $(EXAMPLES)
 

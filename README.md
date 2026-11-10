@@ -9,8 +9,9 @@ cell can be missing.
 
 The repository also has a **machine-learning pipeline** that uses CPandas
 to clean and prepare a messy HR dataset for a scikit-learn model that
-predicts which employees will leave ([ml/README.md](ml/README.md)), and a
-**benchmark against pandas** on a million rows.
+predicts which employees will leave ([ml/README.md](ml/README.md)), a
+**desktop GUI** written in C with GTK 4 (`make gui`), and a **benchmark
+against pandas** on a million rows.
 
 Course project for DS3601 (C Programming), by Samyuktha K and Vedant Singh.
 
@@ -89,6 +90,7 @@ CPandas/
 │   ├── basic.c         short step-by-step example
 │   └── data/           employees.csv, departments.csv, new_hires.csv,
 │                       broken.csv
+├── gui/                desktop window in C + GTK 4 (make gui)
 ├── bench/              benchmark against pandas (make bench)
 ├── ml/                 machine-learning pipeline: CPandas preprocessing +
 │                       scikit-learn model (make ml, see ml/README.md)
@@ -164,7 +166,20 @@ python3 -m venv .venv
 .venv/bin/pip install pandas scikit-learn
 ```
 
-**6. Run the ML pipeline and the benchmark:**
+**6. (Optional) the desktop GUI** needs GTK 4 for building:
+
+```bash
+sudo apt install libgtk-4-dev pkg-config
+```
+
+```bash
+make gui
+```
+
+On WSL the window opens like a normal Windows window (Windows 11 shows
+Linux apps by itself).
+
+**7. Run the ML pipeline and the benchmark:**
 
 ```bash
 make ml
@@ -184,8 +199,11 @@ test files in `build/bench_data/` and takes a minute or two.
 | `make: command not found`, or `gcc: command not found` | step 1 was skipped: `sudo apt install build-essential` |
 | Every test crashes at the start with `AddressSanitizer:DEADLYSIGNAL` | A known clash between newer Linux kernels and older AddressSanitizer versions (for example on Ubuntu 24.04). Run `sudo sysctl vm.mmap_rnd_bits=28`; it lasts until the next reboot. Or build without the sanitizers: `CFLAGS="-std=c11 -Wall -Wextra -Wpedantic -g" make test` |
 | `The virtual environment was not created successfully because ensurepip is not available` | `sudo apt install python3-venv`, delete the half-made `.venv` folder, and repeat step 5 |
-| `scikit-learn and pandas are needed for this step` from `make ml` | step 5 was skipped, or `.venv` is somewhere else: run `PYTHON=/path/to/python make ml` |
+| `scikit-learn and pandas are needed for this step` from `make ml` | step 5 was skipped, or `.venv` is somewhere else: run `PYTHON=/path/to/python make ml`. Without any `.venv`, the scripts use the system `python3`, so `sudo apt install python3-pandas python3-sklearn` also works |
 | `./build/demo: No such file or directory` | run `make` first, from the `CPandas` folder |
+| `dpkg was interrupted, you must manually run 'sudo dpkg --configure -a'` | an earlier install was stopped half-way: run `sudo dpkg --configure -a`, then `sudo apt --fix-broken install`, then the install again |
+| `make gui` says `gtk/gtk.h: No such file or directory` or `pkg-config: not found` | `sudo apt install libgtk-4-dev pkg-config` |
+| On WSL, `make gui` runs but no window appears | update WSL from PowerShell with `wsl --update`, then `wsl --shutdown`, and open Ubuntu again |
 | Paths to `examples/data/...` are not found | run the programs from the `CPandas` folder itself, not from `build/` |
 
 ---
@@ -201,6 +219,7 @@ You need `gcc` (or another C11 compiler) and `make`. Everything goes into
 | `make test` | builds and runs all the tests |
 | `make demo` | just the interactive demo |
 | `make bench` | times CPandas against pandas on 1,000,000 rows (`make bench ROWS=100000` for fewer); see [extensions.md §7](documentation/extensions.md#7-benchmark-against-pandas) |
+| `make gui` | builds and opens the desktop GUI (needs GTK 4, see the setup steps) |
 | `make ml` | runs the machine-learning pipeline: CPandas cleans `ml/data/raw/` and scikit-learn trains a model on the result; see [ml/README.md](ml/README.md) |
 | `make clean` | deletes `build/` (not `.venv/`) |
 
@@ -265,6 +284,28 @@ Without a file, the demo starts with a built-in sample table.
 **basic** loads the employee table, prints statistics, filters and sorts,
 groups by department, joins with the departments, and saves the result to
 `build/basic_output.csv`.
+
+**The GUI** (`make gui`, from the project folder) is a desktop window
+with two tabs:
+
+- **Data:**
+  - Open a CSV and see it as a table, with types in the headers and grey
+    `NA` cells.
+  - Filter, sort, group, join, stack, add computed columns, see column
+    statistics, describe, drop missing rows, and remove columns, all from
+    the sidebar.
+  - Undo goes back up to 30 steps, and Save CSV writes the result.
+- **ML pipeline:** **Run pipeline** runs `make ml` and shows:
+  - its full log;
+  - the test scores;
+  - the confusion matrix (counted again from the predictions with
+    CPandas);
+  - a bar chart of the strongest signals;
+  - the raw, cleaned or predicted data as a table.
+
+The GUI calls CPandas directly for every table it shows. GTK only draws.
+It is built without the sanitizers, because GTK's own memory at start-up
+would flood the leak report.
 
 **The ML pipeline** (`make ml`) runs two steps:
 
