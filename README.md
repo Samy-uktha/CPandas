@@ -34,20 +34,17 @@ df_free(avg); df_free(it); df_free(df);
 (Every function returns a `df_status`. Real code should check it, as
 [examples/basic.c](examples/basic.c) does.)
 
-**Quick start** on Linux (details in
-[Setting up on Ubuntu](#setting-up-on-ubuntu)):
+**Quick start** from the project folder, on Linux or WSL. The first
+time, do the [setup steps](#setting-up-on-ubuntu) first.
 
-```bash
-make
-```
-
-```bash
-make test
-```
-
-```bash
-./build/demo examples/data/employees.csv
-```
+| Command | What it does |
+|---|---|
+| `make` | builds the library and the examples |
+| `make test` | runs all the tests |
+| `./build/demo examples/data/employees.csv` | the menu demo in the terminal |
+| `make gui` | the desktop window (needs GTK 4) |
+| `make ml` | the machine-learning pipeline (needs pandas and scikit-learn) |
+| `make bench ROWS=100000` | the speed comparison with pandas |
 
 ---
 
@@ -107,18 +104,18 @@ CPandas/
 ## Setting up on Ubuntu
 
 These steps are for Ubuntu installed on the computer itself (for example
-dual boot). They also work on WSL and other Debian-based Linux systems.
+dual boot) and for Ubuntu in WSL on Windows. They also work on other
+Debian-based Linux systems. Steps 1, 5 and 6 are needed only once.
 
 **1. Install the tools.** You need the C compiler and `make`
-(`build-essential`), `git`, and Python's virtual environments for the
-benchmark and the ML pipeline:
+(`build-essential`) and `git`:
 
 ```bash
 sudo apt update
 ```
 
 ```bash
-sudo apt install build-essential git python3-venv
+sudo apt install build-essential git
 ```
 
 **2. Get the code.** Clone it into your Linux home folder:
@@ -134,6 +131,17 @@ git clone https://github.com/Samy-uktha/CPandas.git
 ```bash
 cd CPandas
 ```
+
+**On WSL, if the project is already on a Windows drive,** you can use it
+there instead. Windows drives appear under `/mnt`, and the quotes are
+needed when the path has spaces:
+
+```bash
+cd "/mnt/d/path/to/CPandas"
+```
+
+Everything works there. Reading and writing big files is slower than in
+the Linux home folder, though, which shows in the benchmark.
 
 **3. Build and test the library.** This needs nothing beyond step 1:
 
@@ -153,10 +161,24 @@ Every test program should end with `N checks, 0 failures`.
 ./build/demo examples/data/employees.csv
 ```
 
-**5. Set up Python** (only for `make ml` and `make bench`). This puts
-pandas and scikit-learn in a `.venv` folder inside the project, so nothing
-is installed system-wide. `make clean` does not touch it, and git ignores
-it.
+**5. Install pandas and scikit-learn.** These are needed only for
+`make ml` and `make bench`, and either of these two ways works.
+
+*The simple way:* Ubuntu's own packages, installed system-wide. This
+needs no virtual environment. The scripts use the system `python3` when
+they find no `.venv`.
+
+```bash
+sudo apt install python3-pandas python3-sklearn
+```
+
+*Or newer versions in a `.venv` folder inside the project,* which installs
+nothing system-wide. `make clean` does not touch this folder, and git
+ignores it.
+
+```bash
+sudo apt install python3-venv
+```
 
 ```bash
 python3 -m venv .venv
@@ -165,6 +187,9 @@ python3 -m venv .venv
 ```bash
 .venv/bin/pip install pandas scikit-learn
 ```
+
+Don't use plain `pip install` outside a `.venv`. Ubuntu blocks it on
+purpose, to protect the system's own Python.
 
 **6. (Optional) the desktop GUI** needs GTK 4 for building:
 
@@ -176,8 +201,8 @@ sudo apt install libgtk-4-dev pkg-config
 make gui
 ```
 
-On WSL the window opens like a normal Windows window (Windows 11 shows
-Linux apps by itself).
+On WSL the window opens like a normal Windows window, because Windows 11
+shows Linux apps by itself. Close the window to get the terminal back.
 
 **7. Run the ML pipeline and the benchmark:**
 
@@ -199,7 +224,8 @@ test files in `build/bench_data/` and takes a minute or two.
 | `make: command not found`, or `gcc: command not found` | step 1 was skipped: `sudo apt install build-essential` |
 | Every test crashes at the start with `AddressSanitizer:DEADLYSIGNAL` | A known clash between newer Linux kernels and older AddressSanitizer versions (for example on Ubuntu 24.04). Run `sudo sysctl vm.mmap_rnd_bits=28`; it lasts until the next reboot. Or build without the sanitizers: `CFLAGS="-std=c11 -Wall -Wextra -Wpedantic -g" make test` |
 | `The virtual environment was not created successfully because ensurepip is not available` | `sudo apt install python3-venv`, delete the half-made `.venv` folder, and repeat step 5 |
-| `scikit-learn and pandas are needed for this step` from `make ml` | step 5 was skipped, or `.venv` is somewhere else: run `PYTHON=/path/to/python make ml`. Without any `.venv`, the scripts use the system `python3`, so `sudo apt install python3-pandas python3-sklearn` also works |
+| `scikit-learn and pandas are needed for this step` from `make ml` | step 5 was skipped. The scripts look for Python in this order: `$PYTHON`, `.venv/`, `build/venv/`, the system `python3`. To use another one: `PYTHON=/path/to/python make ml` |
+| `error: externally-managed-environment` from `pip install` | use one of the two ways in step 5 instead of plain `pip` |
 | `./build/demo: No such file or directory` | run `make` first, from the `CPandas` folder |
 | `dpkg was interrupted, you must manually run 'sudo dpkg --configure -a'` | an earlier install was stopped half-way: run `sudo dpkg --configure -a`, then `sudo apt --fix-broken install`, then the install again |
 | `make gui` says `gtk/gtk.h: No such file or directory` or `pkg-config: not found` | `sudo apt install libgtk-4-dev pkg-config` |

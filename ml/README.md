@@ -28,10 +28,14 @@ make ml
 This builds `build/ml_preprocess` (with AddressSanitizer, like the rest of
 the project) and runs `ml/run.sh`.
 
-The Python step needs pandas and scikit-learn. `ml/run.sh` looks for them
-in `.venv/bin/python` (see "Setting up on Ubuntu" in the main README);
-set `PYTHON=/path/to/python` to use another
-Python. Without them, step 1 still runs and writes the cleaned files.
+The Python step needs pandas and scikit-learn, installed with apt or in
+a `.venv` (step 5 of "Setting up on Ubuntu" in the main README).
+`ml/run.sh` uses, in this order: `$PYTHON`, `.venv/`, `build/venv/`, or
+the system `python3`. Without pandas and scikit-learn, step 1 still runs
+and writes the cleaned files.
+
+You can also run the pipeline from the GUI (`make gui`, **ML pipeline**
+tab, **Run pipeline**), which shows the scores and charts.
 
 The raw files can be made again (always the same, thanks to a fixed seed):
 
