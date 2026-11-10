@@ -8,7 +8,7 @@
  *
  *   Data         open a CSV and see it as a table; filter, sort, group,
  *                join, stack, describe, add computed columns, remove
- *                columns, drop missing rows; undo; save.
+ *                columns, drop missing rows; undo and redo; save.
  *   ML pipeline  run `make ml` (CPandas preprocessing + scikit-learn) and
  *                read the results: the log of every step, the scores, the
  *                confusion matrix, the strongest features, and the raw,
@@ -22,7 +22,9 @@
  * by cell with the series_get_* functions. GTK only draws.
  *
  * Every operation makes a NEW DataFrame (as everywhere in CPandas). The old
- * one is kept in a history list, so Undo just takes it back.
+ * one is kept in a history list, so Undo just takes it back. Undo moves
+ * the current table to a second list, so Redo can bring it back again;
+ * any new operation empties that second list.
  */
 #include <gtk/gtk.h>
 #include <math.h>
@@ -32,7 +34,7 @@
 
 #include "cpandas.h"
 
-#define HISTORY_SIZE 30     /* how many steps Undo can go back   */
+#define HISTORY_SIZE 30     /* how many steps Undo / Redo keep   */
 #define ZOOM_MIN 60         /* text size limits, in percent      */
 #define ZOOM_MAX 250
 #define ZOOM_STEP 10
@@ -225,6 +227,15 @@ static GtkWidget *table_new(TableView *table)
 
 /* ---- the application's state -------------------------------------------- */
 
+/* One list of earlier (or, for Redo, later) tables, newest last. Each
+   step remembers its table, the table's name and what made it. */
+typedef struct {
+    DataFrame *frames[HISTORY_SIZE];
+    char       names[HISTORY_SIZE][TEXT_SIZE];
+    char       messages[HISTORY_SIZE][TEXT_SIZE * 2];
+    int        count;
+} Steps;
+
 typedef struct {
     GtkWindow *window;
 
@@ -232,15 +243,16 @@ typedef struct {
     TableView  table;
     DataFrame *current;
     char       current_name[TEXT_SIZE];
-    DataFrame *history[HISTORY_SIZE];
-    char       history_names[HISTORY_SIZE][TEXT_SIZE];
-    int        nhistory;
+    char       current_message[TEXT_SIZE * 2];
+    Steps      undo;
+    Steps      redo;
+    GSimpleAction *undo_action;
+    GSimpleAction *redo_action;
     GtkStringList *columns;          /* the current table's column names */
     GtkStringList *columns_or_none;  /* "(none)" + the names             */
     GtkWidget *title_label;
     GtkWidget *shape_label;
     GtkWidget *status_label;
-    GtkWidget *undo_button;
     GtkWidget *filter_column, *filter_op, *filter_value;
     GtkWidget *sort_column, *sort_desc, *sort_then, *sort_then_desc;
     GtkWidget *group_key, *group_key2, *group_column, *group_func;
@@ -328,51 +340,121 @@ static void show_current(App *app)
              df_nrows(app->current), df_ncols(app->current));
     gtk_label_set_text(GTK_LABEL(app->shape_label), text);
     gtk_label_set_text(GTK_LABEL(app->title_label), app->current_name);
-    gtk_widget_set_sensitive(app->undo_button, app->nhistory > 0);
+    /* the buttons and keys follow their actions */
+    if (app->undo_action != NULL) {
+        g_simple_action_set_enabled(app->undo_action, app->undo.count > 0);
+        g_simple_action_set_enabled(app->redo_action, app->redo.count > 0);
+    }
 }
 
-/* Makes `result` the current table (keeping the old one for Undo). */
-static void set_current(App *app, DataFrame *result, const char *name,
-                        const char *message)
+/* Adds a table to the end of a list. A full list forgets its oldest step. */
+static void steps_push(Steps *steps, DataFrame *frame, const char *name,
+                       const char *message)
 {
-    if (app->current != NULL) {
-        if (app->nhistory == HISTORY_SIZE) {
-            /* full: forget the oldest step */
-            df_free(app->history[0]);
-            memmove(&app->history[0], &app->history[1],
-                    (HISTORY_SIZE - 1) * sizeof app->history[0]);
-            memmove(app->history_names[0], app->history_names[1],
-                    (HISTORY_SIZE - 1) * sizeof app->history_names[0]);
-            app->nhistory--;
-        }
-        app->history[app->nhistory] = app->current;
-        snprintf(app->history_names[app->nhistory], TEXT_SIZE, "%s",
-                 app->current_name);
-        app->nhistory++;
+    if (steps->count == HISTORY_SIZE) {
+        df_free(steps->frames[0]);
+        memmove(&steps->frames[0], &steps->frames[1],
+                (HISTORY_SIZE - 1) * sizeof steps->frames[0]);
+        memmove(steps->names[0], steps->names[1],
+                (HISTORY_SIZE - 1) * sizeof steps->names[0]);
+        memmove(steps->messages[0], steps->messages[1],
+                (HISTORY_SIZE - 1) * sizeof steps->messages[0]);
+        steps->count--;
     }
-    app->current = result;
-    if (name != NULL) {
-        snprintf(app->current_name, sizeof app->current_name, "%s", name);
+    int k = steps->count;
+    steps->frames[k] = frame;
+    snprintf(steps->names[k], sizeof steps->names[k], "%s", name);
+    snprintf(steps->messages[k], sizeof steps->messages[k], "%s", message);
+    steps->count++;
+}
+
+static void steps_clear(Steps *steps)
+{
+    for (int k = 0; k < steps->count; k++) {
+        df_free(steps->frames[k]);
     }
+    steps->count = 0;
+}
+
+/* Puts the current table on `from`'s opposite list `to` and takes the
+   newest table of `from` as the current one. Used by Undo and Redo. */
+static void step_over(App *app, Steps *from, Steps *to, const char *verb)
+{
+    if (from->count == 0) {
+        return;
+    }
+    char message[TEXT_SIZE * 3];
+    int k = from->count - 1;
+    /* Undo tells what it took away, Redo what it brings back. */
+    snprintf(message, sizeof message, "%s: %s", verb,
+             (to == &app->redo) ? app->current_message : from->messages[k]);
+
+    steps_push(to, app->current, app->current_name, app->current_message);
+    app->current = from->frames[k];
+    snprintf(app->current_name, sizeof app->current_name, "%s",
+             from->names[k]);
+    snprintf(app->current_message, sizeof app->current_message, "%s",
+             from->messages[k]);
+    from->count--;
     show_current(app);
     say(app, message, 0);
 }
 
-static void on_undo(GtkButton *button, gpointer user_data)
+/* Makes `result` the current table (keeping the old one for Undo). A new
+   step makes the old Redo steps meaningless, so they are dropped. */
+static void set_current(App *app, DataFrame *result, const char *name,
+                        const char *message)
 {
-    (void)button;
-    App *app = user_data;
-    if (app->nhistory == 0) {
-        return;
+    if (app->current != NULL) {
+        steps_push(&app->undo, app->current, app->current_name,
+                   app->current_message);
     }
-    DataFrame *old = app->current;
-    app->nhistory--;
-    app->current = app->history[app->nhistory];
-    snprintf(app->current_name, sizeof app->current_name, "%s",
-             app->history_names[app->nhistory]);
-    show_current(app);        /* shows the new frame before freeing */
-    df_free(old);
-    say(app, "Undone.", 0);
+    steps_clear(&app->redo);
+    app->current = result;
+    if (name != NULL) {
+        snprintf(app->current_name, sizeof app->current_name, "%s", name);
+    }
+    snprintf(app->current_message, sizeof app->current_message, "%s",
+             message);
+    show_current(app);
+    say(app, message, 0);
+}
+
+static void on_undo(GSimpleAction *action, GVariant *v, gpointer user_data)
+{
+    (void)action;
+    (void)v;
+    App *app = user_data;
+    step_over(app, &app->undo, &app->redo, "Undone");
+}
+
+static void on_redo(GSimpleAction *action, GVariant *v, gpointer user_data)
+{
+    (void)action;
+    (void)v;
+    App *app = user_data;
+    step_over(app, &app->redo, &app->undo, "Redone");
+}
+
+/* Undo and Redo as window actions, so the buttons and the keys share them
+   (and both turn grey together when there is nothing to undo or redo). */
+static void add_history_actions(App *app, GtkApplication *application)
+{
+    app->undo_action = g_simple_action_new("undo", NULL);
+    g_signal_connect(app->undo_action, "activate", G_CALLBACK(on_undo), app);
+    app->redo_action = g_simple_action_new("redo", NULL);
+    g_signal_connect(app->redo_action, "activate", G_CALLBACK(on_redo), app);
+    g_action_map_add_action(G_ACTION_MAP(app->window),
+                            G_ACTION(app->undo_action));
+    g_action_map_add_action(G_ACTION_MAP(app->window),
+                            G_ACTION(app->redo_action));
+    g_simple_action_set_enabled(app->undo_action, FALSE);
+    g_simple_action_set_enabled(app->redo_action, FALSE);
+
+    const char *undo_keys[] = {"<Control>z", NULL};
+    const char *redo_keys[] = {"<Control>y", "<Control><Shift>z", NULL};
+    gtk_application_set_accels_for_action(application, "win.undo", undo_keys);
+    gtk_application_set_accels_for_action(application, "win.redo", redo_keys);
 }
 
 /* ---- reading the form widgets ------------------------------------------- */
@@ -1052,8 +1134,12 @@ static GtkWidget *build_data_tab(App *app)
     g_signal_connect(open, "clicked", G_CALLBACK(on_open), app);
     GtkWidget *sample = gtk_button_new_with_label("Sample table");
     g_signal_connect(sample, "clicked", G_CALLBACK(on_sample), app);
-    app->undo_button = gtk_button_new_with_label("↶ Undo");
-    g_signal_connect(app->undo_button, "clicked", G_CALLBACK(on_undo), app);
+    GtkWidget *undo = gtk_button_new_with_label("↶ Undo");
+    gtk_actionable_set_action_name(GTK_ACTIONABLE(undo), "win.undo");
+    gtk_widget_set_tooltip_text(undo, "Undo (Ctrl + Z)");
+    GtkWidget *redo = gtk_button_new_with_label("↷ Redo");
+    gtk_actionable_set_action_name(GTK_ACTIONABLE(redo), "win.redo");
+    gtk_widget_set_tooltip_text(redo, "Redo (Ctrl + Y)");
     GtkWidget *save = gtk_button_new_with_label("Save CSV…");
     g_signal_connect(save, "clicked", G_CALLBACK(on_save), app);
     app->title_label = gtk_label_new("");
@@ -1062,7 +1148,8 @@ static GtkWidget *build_data_tab(App *app)
     gtk_widget_add_css_class(app->shape_label, "dim");
     gtk_box_append(GTK_BOX(bar), open);
     gtk_box_append(GTK_BOX(bar), sample);
-    gtk_box_append(GTK_BOX(bar), app->undo_button);
+    gtk_box_append(GTK_BOX(bar), undo);
+    gtk_box_append(GTK_BOX(bar), redo);
     gtk_box_append(GTK_BOX(bar), save);
     GtkWidget *spacer = grow(gtk_label_new(""));
     gtk_box_append(GTK_BOX(bar), spacer);
@@ -1681,9 +1768,10 @@ static void on_shutdown(GApplication *application, gpointer user_data)
     (void)application;
     App *app = user_data;
     df_free(app->current);
-    for (int k = 0; k < app->nhistory; k++) {
-        df_free(app->history[k]);
-    }
+    steps_clear(&app->undo);
+    steps_clear(&app->redo);
+    g_clear_object(&app->undo_action);
+    g_clear_object(&app->redo_action);
     df_free(app->ml_frame);
     g_clear_object(&app->columns);
     g_clear_object(&app->columns_or_none);
@@ -1738,6 +1826,7 @@ static void on_activate(GtkApplication *application, gpointer user_data)
     gtk_window_set_titlebar(app->window, header);
     gtk_window_set_child(app->window, stack);
     add_zoom_controls(app, application, header);
+    add_history_actions(app, application);
 
     /* Start with the employees example, or the sample if it is not here. */
     const char *start = "examples/data/employees.csv";
@@ -1748,7 +1837,7 @@ static void on_activate(GtkApplication *application, gpointer user_data)
     if (df != NULL) {
         set_current(app, df, "employees.csv",
                     "Opened examples/data/employees.csv. Pick an operation "
-                    "on the right; Undo goes back.");
+                    "on the right; Undo and Redo step through them.");
     } else {
         df_make_sample(&df);
         set_current(app, df, "sample table", "Loaded the built-in sample.");

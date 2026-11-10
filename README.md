@@ -320,7 +320,9 @@ with two tabs:
   - Filter, sort, group, join, stack, add computed columns, see column
     statistics, describe, drop missing rows, and remove columns, all from
     the sidebar.
-  - Undo goes back up to 30 steps, and Save CSV writes the result.
+  - **↶ Undo** (Ctrl + Z) goes back up to 30 steps, and **↷ Redo**
+    (Ctrl + Y or Ctrl + Shift + Z) goes forward again. A new operation
+    after an Undo clears the Redo steps. Save CSV writes the result.
 - **ML pipeline:** **Run pipeline** runs `make ml` and shows:
   - its full log;
   - the test scores;
