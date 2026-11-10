@@ -9,7 +9,7 @@ TESTS := $(patsubst tests/test_%.c,build/test_%,$(wildcard tests/test_*.c))
 LIB  := build/libcpandas.a
 EXAMPLES := build/demo build/basic
 
-.PHONY: all test clean demo examples bench
+.PHONY: all test clean demo examples bench ml
 
 # `make` builds the library and both example programs.
 all: $(LIB) $(EXAMPLES)
@@ -43,6 +43,15 @@ build/basic: examples/basic.c $(OBJ) | build
 
 demo: build/demo
 
+# The machine-learning pipeline (see ml/README.md): CPandas cleans the raw
+# CSVs (ml/preprocess.c, built with the sanitizers like everything else),
+# then scikit-learn trains and tests a model on the result.
+build/ml_preprocess: ml/preprocess.c $(OBJ) | build
+	$(CC) $(CFLAGS) $(filter %.c %.o,$^) -o $@ $(LDLIBS)
+
+ml: build/ml_preprocess
+	sh ml/run.sh
+
 examples: $(EXAMPLES)
 
 # Benchmark against pandas (see bench/run.sh). Built from the sources with
@@ -60,4 +69,4 @@ bench: build/bench
 clean:
 	rm -rf build
 
--include $(OBJ:.o=.d) $(TESTS:=.d) $(EXAMPLES:=.d)
+-include $(OBJ:.o=.d) $(TESTS:=.d) $(EXAMPLES:=.d) build/ml_preprocess.d
