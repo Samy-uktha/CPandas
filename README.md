@@ -318,8 +318,10 @@ with two tabs:
   - Open a CSV and see it as a table, with types in the headers and grey
     `NA` cells.
   - Filter, sort, group, join, stack, add computed columns, see column
-    statistics, describe, drop missing rows, and remove columns, all from
-    the sidebar.
+    statistics, describe, drop missing rows, keep the first N rows, and
+    remove columns, all from the sidebar.
+  - **Describe** opens the summary in a window of its own and leaves the
+    table as it is; while that window is open it follows every change.
   - **↶ Undo** (Ctrl + Z) goes back up to 30 steps, and **↷ Redo**
     (Ctrl + Y or Ctrl + Shift + Z) goes forward again. A new operation
     after an Undo clears the Redo steps. Save CSV writes the result.

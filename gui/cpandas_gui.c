@@ -262,6 +262,12 @@ typedef struct {
     GtkWidget *remove_column;
     GtkWidget *head_rows;
 
+    /* the Describe window: a summary beside the table, never instead of it */
+    GtkWidget *summary_window;
+    GtkWidget *summary_label;
+    TableView  summary_table;
+    DataFrame *summary_frame;
+
     /* ML tab */
     TableView  ml_table;
     DataFrame *ml_frame;
@@ -331,6 +337,10 @@ static void refresh_column_lists(App *app)
     g_free(with_none);
 }
 
+static void refresh_summary(App *app);
+static void on_stats_column(GObject *dropdown, GParamSpec *pspec,
+                            gpointer user_data);
+
 static void show_current(App *app)
 {
     table_show(&app->table, app->current);
@@ -340,6 +350,15 @@ static void show_current(App *app)
              df_nrows(app->current), df_ncols(app->current));
     gtk_label_set_text(GTK_LABEL(app->shape_label), text);
     gtk_label_set_text(GTK_LABEL(app->title_label), app->current_name);
+    /* the statistics card describes the table on screen, not an old one */
+    if (app->stats_label != NULL) {
+        on_stats_column(NULL, NULL, app);
+    }
+    /* an open summary window always describes the table on screen */
+    if (app->summary_window != NULL &&
+        gtk_widget_get_visible(app->summary_window)) {
+        refresh_summary(app);
+    }
     /* the buttons and keys follow their actions */
     if (app->undo_action != NULL) {
         g_simple_action_set_enabled(app->undo_action, app->undo.count > 0);
@@ -842,15 +861,52 @@ static void on_compute(GtkButton *b, gpointer user_data)
     set_current(app, copy, NULL, text);
 }
 
+/* Describe shows its summary in a window of its own and leaves the current
+   table alone: describing a summary would only describe the statistics. */
+static void refresh_summary(App *app)
+{
+    DataFrame *summary = NULL;
+    df_status st = df_describe(app->current, &summary);
+    char text[TEXT_SIZE * 2];
+    if (st == DF_OK) {
+        snprintf(text, sizeof text, "Summary of %s (%zu rows): one column "
+                 "per number column", app->current_name,
+                 df_nrows(app->current));
+    } else {
+        snprintf(text, sizeof text, "Cannot describe %s: %s",
+                 app->current_name, df_strerror(st));
+    }
+    gtk_label_set_text(GTK_LABEL(app->summary_label), text);
+    table_show(&app->summary_table, summary);   /* new frame shown first */
+    df_free(app->summary_frame);
+    app->summary_frame = summary;
+}
+
 static void on_describe(GtkButton *b, gpointer user_data)
 {
     (void)b;
     App *app = user_data;
-    DataFrame *result = NULL;
-    if (check(app, df_describe(app->current, &result), "Describe")) {
-        set_current(app, result, NULL,
-                    "Summary of the number columns (Undo to go back).");
+    if (app->summary_window == NULL) {
+        GtkWidget *window = gtk_window_new();
+        gtk_window_set_title(GTK_WINDOW(window), "Summary (describe)");
+        gtk_window_set_transient_for(GTK_WINDOW(window), app->window);
+        gtk_window_set_destroy_with_parent(GTK_WINDOW(window), TRUE);
+        gtk_window_set_hide_on_close(GTK_WINDOW(window), TRUE);  /* reused */
+        gtk_window_set_default_size(GTK_WINDOW(window), 980, 420);
+
+        GtkWidget *box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
+        app->summary_label = gtk_label_new("");
+        gtk_label_set_xalign(GTK_LABEL(app->summary_label), 0.0f);
+        gtk_widget_add_css_class(app->summary_label, "status");
+        gtk_box_append(GTK_BOX(box), app->summary_label);
+        gtk_box_append(GTK_BOX(box), table_new(&app->summary_table));
+        gtk_window_set_child(GTK_WINDOW(window), box);
+        app->summary_window = window;
     }
+    refresh_summary(app);
+    gtk_window_present(GTK_WINDOW(app->summary_window));
+    say(app, "Opened the summary in its own window; your table is unchanged. "
+             "It follows the table while it stays open.", 0);
 }
 
 static void on_drop_missing(GtkButton *b, gpointer user_data)
@@ -1102,10 +1158,14 @@ static GtkWidget *build_sidebar(App *app)
                                                   G_CALLBACK(on_drop_missing),
                                                   app)));
     r = row(c);
+    gtk_box_append(GTK_BOX(r), small_label("Keep the first"));
     app->head_rows = gtk_spin_button_new_with_range(0, 1000000, 1);
     gtk_spin_button_set_value(GTK_SPIN_BUTTON(app->head_rows), 10);
+    gtk_widget_set_tooltip_text(app->head_rows,
+                                "How many rows to keep, from the top");
     gtk_box_append(GTK_BOX(r), app->head_rows);
-    gtk_box_append(GTK_BOX(r), grow(action_button("Keep first rows",
+    gtk_box_append(GTK_BOX(r), small_label("rows"));
+    gtk_box_append(GTK_BOX(r), grow(action_button("Keep",
                                                   G_CALLBACK(on_head), app)));
     r = row(c);
     app->remove_column = grow(column_dropdown(app->columns));
@@ -1773,6 +1833,7 @@ static void on_shutdown(GApplication *application, gpointer user_data)
     g_clear_object(&app->undo_action);
     g_clear_object(&app->redo_action);
     df_free(app->ml_frame);
+    df_free(app->summary_frame);
     g_clear_object(&app->columns);
     g_clear_object(&app->columns_or_none);
     g_clear_object(&app->zoom_css);
