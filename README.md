@@ -70,6 +70,8 @@ CPandas/
 │   └── data/           employees.csv, departments.csv, new_hires.csv,
 │                       broken.csv
 ├── bench/              benchmark against pandas (make bench)
+├── ml/                 machine-learning pipeline: CPandas preprocessing +
+│                       scikit-learn model (make ml, see ml/README.md)
 ├── documentation/
 │   ├── part_a_data_layer.md     Series, DataFrame, CSV, errors
 │   ├── part_b_query_layer.md    rows, filter, sort, stats, group-by, join
@@ -91,6 +93,7 @@ You need `gcc` (or another C11 compiler) and `make`. Everything goes into
 | `make test` | builds and runs all the tests |
 | `make demo` | just the interactive demo |
 | `make bench` | times CPandas against pandas on 1,000,000 rows (`make bench ROWS=100000` for fewer); see [extensions.md §7](documentation/extensions.md#7-benchmark-against-pandas) |
+| `make ml` | runs the machine-learning pipeline: CPandas cleans `ml/data/raw/` and scikit-learn trains a model on the result; see [ml/README.md](ml/README.md) |
 | `make clean` | deletes `build/` |
 
 By default the Makefile turns on **AddressSanitizer and UBSan**, so memory
@@ -190,6 +193,9 @@ The tables of what each test covers are in the documents in
   storage, chunked CSV reading and error line numbers, hash group-by and
   join with several keys, more statistics, stacking, computed columns) and
   the benchmark against pandas.
+- [ml/README.md](ml/README.md): the attrition-prediction pipeline that
+  uses CPandas to clean, join, encode and scale data for a scikit-learn
+  model, with its results.
 - The headers in `include/` describe every function, including who owns
   which memory.
 
