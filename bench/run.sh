@@ -10,13 +10,16 @@ set -e
 ROWS=${1:-1000000}
 DATA=build/bench_data
 # The Python to use: $PYTHON if set, else the project's .venv, else the
-# older build/venv (which `make clean` deletes).
+# older build/venv (which `make clean` deletes), else the system python3
+# (for example with pandas and scikit-learn installed through apt).
 if [ -n "$PYTHON" ]; then
     PY=$PYTHON
 elif [ -x .venv/bin/python ]; then
     PY=.venv/bin/python
-else
+elif [ -x build/venv/bin/python ]; then
     PY=build/venv/bin/python
+else
+    PY=python3
 fi
 
 if [ ! -f "$DATA/employees_$ROWS.csv" ]; then
