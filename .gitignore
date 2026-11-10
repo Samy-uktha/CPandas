@@ -9,3 +9,6 @@ build/
 *.o
 *.d
 .vscode/
+
+# Python environment for the benchmark and the ML pipeline
+.venv/

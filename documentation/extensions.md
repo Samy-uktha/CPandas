@@ -350,7 +350,8 @@ make bench ROWS=100000
 3. Times pandas with `bench/bench_pandas.py` on the same files.
 4. Prints both side by side.
 
-It looks for pandas in `build/venv`; set `PYTHON=/path/to/python` to use
+It looks for pandas in `.venv` (see the README's setup section); set
+`PYTHON=/path/to/python` to use
 another one. Without pandas it shows the CPandas numbers only.
 
 The data has 1,000,000 employees with 9 columns: int, text, 10

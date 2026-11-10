@@ -7,6 +7,11 @@ computed columns and save the result back to CSV. Columns can hold
 integers, floating-point numbers, text, true/false values or dates, and any
 cell can be missing.
 
+The repository also has a **machine-learning pipeline** that uses CPandas
+to clean and prepare a messy HR dataset for a scikit-learn model that
+predicts which employees will leave ([ml/README.md](ml/README.md)), and a
+**benchmark against pandas** on a million rows.
+
 Course project for DS3601 (C Programming), by Samyuktha K and Vedant Singh.
 
 ```c
@@ -27,6 +32,21 @@ df_free(avg); df_free(it); df_free(df);
 
 (Every function returns a `df_status`. Real code should check it, as
 [examples/basic.c](examples/basic.c) does.)
+
+**Quick start** on Linux (details in
+[Setting up on Ubuntu](#setting-up-on-ubuntu)):
+
+```bash
+make
+```
+
+```bash
+make test
+```
+
+```bash
+./build/demo examples/data/employees.csv
+```
 
 ---
 
@@ -82,6 +102,94 @@ CPandas/
 
 ---
 
+## Setting up on Ubuntu
+
+These steps are for Ubuntu installed on the computer itself (for example
+dual boot). They also work on WSL and other Debian-based Linux systems.
+
+**1. Install the tools.** You need the C compiler and `make`
+(`build-essential`), `git`, and Python's virtual environments for the
+benchmark and the ML pipeline:
+
+```bash
+sudo apt update
+```
+
+```bash
+sudo apt install build-essential git python3-venv
+```
+
+**2. Get the code.** Clone it into your Linux home folder:
+
+```bash
+cd ~
+```
+
+```bash
+git clone https://github.com/Samy-uktha/CPandas.git
+```
+
+```bash
+cd CPandas
+```
+
+**3. Build and test the library.** This needs nothing beyond step 1:
+
+```bash
+make
+```
+
+```bash
+make test
+```
+
+Every test program should end with `N checks, 0 failures`.
+
+**4. Try the demo:**
+
+```bash
+./build/demo examples/data/employees.csv
+```
+
+**5. Set up Python** (only for `make ml` and `make bench`). This puts
+pandas and scikit-learn in a `.venv` folder inside the project, so nothing
+is installed system-wide. `make clean` does not touch it, and git ignores
+it.
+
+```bash
+python3 -m venv .venv
+```
+
+```bash
+.venv/bin/pip install pandas scikit-learn
+```
+
+**6. Run the ML pipeline and the benchmark:**
+
+```bash
+make ml
+```
+
+```bash
+make bench ROWS=100000
+```
+
+`make bench` with no `ROWS` uses 1,000,000 rows. It makes about 100 MB of
+test files in `build/bench_data/` and takes a minute or two.
+
+### If something goes wrong
+
+| Problem | Fix |
+|---|---|
+| `make: command not found`, or `gcc: command not found` | step 1 was skipped: `sudo apt install build-essential` |
+| Every test crashes at the start with `AddressSanitizer:DEADLYSIGNAL` | A known clash between newer Linux kernels and older AddressSanitizer versions (for example on Ubuntu 24.04). Run `sudo sysctl vm.mmap_rnd_bits=28`; it lasts until the next reboot. Or build without the sanitizers: `CFLAGS="-std=c11 -Wall -Wextra -Wpedantic -g" make test` |
+| `The virtual environment was not created successfully because ensurepip is not available` | `sudo apt install python3-venv`, delete the half-made `.venv` folder, and repeat step 5 |
+| `scikit-learn and pandas are needed for this step` from `make ml` | step 5 was skipped, or `.venv` is somewhere else: run `PYTHON=/path/to/python make ml` |
+| `./build/demo: No such file or directory` | run `make` first, from the `CPandas` folder |
+| Paths to `examples/data/...` are not found | run the programs from the `CPandas` folder itself, not from `build/` |
+
+---
+
 ## Building
 
 You need `gcc` (or another C11 compiler) and `make`. Everything goes into
@@ -94,13 +202,15 @@ You need `gcc` (or another C11 compiler) and `make`. Everything goes into
 | `make demo` | just the interactive demo |
 | `make bench` | times CPandas against pandas on 1,000,000 rows (`make bench ROWS=100000` for fewer); see [extensions.md §7](documentation/extensions.md#7-benchmark-against-pandas) |
 | `make ml` | runs the machine-learning pipeline: CPandas cleans `ml/data/raw/` and scikit-learn trains a model on the result; see [ml/README.md](ml/README.md) |
-| `make clean` | deletes `build/` |
+| `make clean` | deletes `build/` (not `.venv/`) |
 
 By default the Makefile turns on **AddressSanitizer and UBSan**, so memory
 leaks and invalid memory accesses make the tests fail. This works on Linux,
 WSL and macOS.
 
-**Windows (MinGW gcc in Git Bash)** has no AddressSanitizer, so set
+**Windows:** the easiest way is WSL (Ubuntu inside Windows), with the
+same steps as in [Setting up on Ubuntu](#setting-up-on-ubuntu).
+**MinGW gcc in Git Bash** has no AddressSanitizer, so set
 `CFLAGS` without it, as an environment variable in front of `make`:
 
 ```bash
@@ -155,6 +265,18 @@ Without a file, the demo starts with a built-in sample table.
 **basic** loads the employee table, prints statistics, filters and sorts,
 groups by department, joins with the departments, and saves the result to
 `build/basic_output.csv`.
+
+**The ML pipeline** (`make ml`) runs two steps:
+
+1. `ml/preprocess.c` uses CPandas to clean `ml/data/raw/` into
+   `build/ml/train.csv` and `test.csv`. It fixes the spellings, removes
+   duplicates, joins the tables, builds features, fills gaps, makes one-hot
+   columns and scales the numbers.
+2. `ml/train.py` trains and tests scikit-learn models on those files.
+
+The chosen model, logistic regression, reaches a ROC AUC of 0.82 on the
+test set and catches 74% of the employees who leave. The steps and results
+are in [ml/README.md](ml/README.md).
 
 ---
 
@@ -215,7 +337,11 @@ The tables of what each test covers are in the documents in
 ## Limitations (main ones)
 
 - Most operations are 2–8× slower than pandas (one function call per cell
-  keeps the types opaque); group-by is faster. See the benchmark.
+  keeps the types opaque); group-by is faster. See the benchmark in
+  [extensions.md §7](documentation/extensions.md#7-benchmark-against-pandas).
+- There are no text functions (trim, upper / lower case, replace),
+  `drop_duplicates` or one-hot encoding built in; the ML pipeline shows
+  how to do them with the existing functions.
 - Numbers are compared and summed as `double` (exact up to 2⁵³).
 - `df_read_csv` keeps all parsed fields in memory; use
   `df_read_csv_chunks` for files bigger than the memory. An empty string

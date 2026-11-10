@@ -29,7 +29,8 @@ This builds `build/ml_preprocess` (with AddressSanitizer, like the rest of
 the project) and runs `ml/run.sh`.
 
 The Python step needs pandas and scikit-learn. `ml/run.sh` looks for them
-in `build/venv/bin/python`; set `PYTHON=/path/to/python` to use another
+in `.venv/bin/python` (see "Setting up on Ubuntu" in the main README);
+set `PYTHON=/path/to/python` to use another
 Python. Without them, step 1 still runs and writes the cleaned files.
 
 The raw files can be made again (always the same, thanks to a fixed seed):
