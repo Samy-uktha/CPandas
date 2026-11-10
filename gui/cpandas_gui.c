@@ -1649,7 +1649,8 @@ static void add_zoom_controls(App *app, GtkApplication *application,
 /* ---- window, style, start and end -------------------------------------- */
 
 static const char *STYLE =
-    "window { background: #f6f6f3; }"
+    "window { background: #f6f6f3; color: #1d2126; }"
+    ".toolbar, .sidebar, .card, .status { color: #1d2126; }"
     ".toolbar { padding: 8px 10px; background: #ffffff;"
     "  border-bottom: 1px solid #e2e2dd; }"
     ".sidebar { background: #f0f0ec; border-left: 1px solid #e2e2dd; }"
@@ -1690,9 +1691,28 @@ static void on_shutdown(GApplication *application, gpointer user_data)
     g_free(app);
 }
 
+/* The colours above are made for a light window. On a desktop with a dark
+   theme (for example Ubuntu's Yaru-dark), the theme's white text would land
+   on these light backgrounds and buttons would vanish. So the GUI always
+   uses GTK's built-in Adwaita theme in its light version, whatever the
+   desktop uses. */
+static void use_light_theme(void)
+{
+    GtkSettings *settings = gtk_settings_get_default();
+    g_object_set(settings, "gtk-theme-name", "Adwaita",
+                 "gtk-application-prefer-dark-theme", FALSE, NULL);
+#if GTK_CHECK_VERSION(4, 20, 0)
+    /* GTK 4.20 and later also follow the desktop's light / dark setting
+       directly, so that has to be set to light as well. */
+    g_object_set(settings, "gtk-interface-color-scheme",
+                 GTK_INTERFACE_COLOR_SCHEME_LIGHT, NULL);
+#endif
+}
+
 static void on_activate(GtkApplication *application, gpointer user_data)
 {
     App *app = user_data;
+    use_light_theme();
     GtkCssProvider *css = gtk_css_provider_new();
     gtk_css_provider_load_from_string(css, STYLE);
     gtk_style_context_add_provider_for_display(
